@@ -1,17 +1,140 @@
 const express = require('express');
 const bcrypt = require('bcrypt');
 const db = require('../db');
-const { verifyToken } = require('../middleware/authMiddleware');
+const redis = require('../services/redisClient');
+const { verifyToken, validateOrigin } = require('../middleware/authMiddleware');
+const {
+  hasPermission,
+  requireAnyPermission,
+  requirePermission,
+  authorize,
+} = require('../middleware/permissionMiddleware');
 
 const router = express.Router();
 
-// Apply verifyToken middleware to all routes in this router
+// Apply middleware to all routes in this router
+router.use(validateOrigin);
 router.use(verifyToken);
+
+async function getUserWarehouseId(req) {
+  if (req.user?.warehouse_id) {
+    return req.user.warehouse_id;
+  }
+
+  const { rows } = await db.query('SELECT warehouse_id FROM users WHERE user_id = $1', [req.user.user_id]);
+  return rows[0]?.warehouse_id || null;
+}
+
+function appendWarehouseScope(query, params, alias, warehouseId) {
+  if (!warehouseId) {
+    return `${query} AND 1=0`;
+  }
+
+  params.push(warehouseId);
+  return `${query} AND ${alias}.warehouse_id = $${params.length}`;
+}
+
+const legacyPermissionMap = {
+  dashboard: {
+    read: ['reports:read'],
+  },
+  users: {
+    read: ['users:read'],
+    write: ['users:create', 'users:update'],
+    delete: ['users:delete'],
+  },
+  products: {
+    read: ['products:read'],
+    write: ['products:create', 'products:update'],
+    delete: ['products:delete'],
+  },
+  inventory: {
+    read: ['inventory:read'],
+    write: ['inventory:create', 'inventory:update', 'inventory:request_adjust', 'inventory:scan'],
+    delete: ['inventory:delete'],
+  },
+  purchase: {
+    read: ['purchase_orders:read'],
+    write: ['purchase_orders:create', 'purchase_orders:approve'],
+  },
+  orders: {
+    read: ['orders:read', 'orders:track', 'tasks:read', 'tasks:read_own', 'shipments:read_own'],
+    write: ['orders:create', 'orders:update', 'orders:assign', 'tasks:create', 'tasks:update', 'tasks:update_own', 'shipments:update_status'],
+  },
+  reports: {
+    read: ['reports:read', 'reports:read_limited'],
+    write: ['reports:export'],
+  },
+  settings: {
+    read: ['settings:read'],
+    write: ['settings:update', 'roles:manage'],
+  },
+};
+
+const legacyControlledPermissions = new Set(
+  Object.values(legacyPermissionMap)
+    .flatMap((actions) => Object.values(actions))
+    .flat()
+);
+
+function normalizeExactPermissions(permissions) {
+  if (Array.isArray(permissions)) {
+    return permissions;
+  }
+
+  if (typeof permissions === 'string') {
+    try {
+      const parsed = JSON.parse(permissions);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+
+  return [];
+}
+
+function exactPermissionsToLegacy(permissions) {
+  const exact = new Set(normalizeExactPermissions(permissions));
+  return Object.entries(legacyPermissionMap).reduce((legacy, [moduleName, actions]) => {
+    const enabledActions = Object.entries(actions)
+      .filter(([, mappedPermissions]) => mappedPermissions.some((permission) => exact.has(permission)))
+      .map(([action]) => action);
+
+    if (enabledActions.length) {
+      legacy[moduleName] = enabledActions.join(',');
+    }
+
+    return legacy;
+  }, {});
+}
+
+function legacyPermissionsToExact(permissions, existingPermissions = []) {
+  if (Array.isArray(permissions)) {
+    return permissions;
+  }
+
+  const preserved = normalizeExactPermissions(existingPermissions).filter((permission) => !legacyControlledPermissions.has(permission));
+  const selected = [];
+
+  Object.entries(permissions || {}).forEach(([moduleName, actionList]) => {
+    const actions = String(actionList || '')
+      .split(',')
+      .map((action) => action.trim())
+      .filter(Boolean);
+
+    actions.forEach((action) => {
+      selected.push(...(legacyPermissionMap[moduleName]?.[action] || []));
+    });
+  });
+
+  return [...new Set([...preserved, ...selected])];
+}
 
 // ==========================================
 // 1. Dashboard Stats & Notifications
 // ==========================================
-router.get('/dashboard/stats', async (req, res) => {
+router.get('/dashboard/stats', requireAnyPermission('reports:read', 'reports:read_limited'), async (req, res) => {
   try {
     const productsCount = await db.query('SELECT COUNT(*) FROM products');
     const categoriesCount = await db.query('SELECT COUNT(*) FROM categories');
@@ -54,7 +177,7 @@ router.get('/dashboard/stats', async (req, res) => {
   }
 });
 
-router.get('/dashboard/admin/summary', async (req, res) => {
+router.get('/dashboard/admin/summary', requirePermission('reports:read'), async (req, res) => {
   try {
     const productsCount = await db.query('SELECT COUNT(*) FROM products');
     const categoriesCount = await db.query('SELECT COUNT(*) FROM categories');
@@ -97,7 +220,7 @@ router.get('/dashboard/admin/summary', async (req, res) => {
   }
 });
 
-router.get('/dashboard/notifications', async (req, res) => {
+router.get('/dashboard/notifications', requireAnyPermission('settings:read', 'reports:read', 'reports:read_limited'), async (req, res) => {
   try {
     const notifications = await db.query('SELECT * FROM system_notifications ORDER BY created_at DESC LIMIT 5');
     const activities = await db.query(`
@@ -119,10 +242,197 @@ router.get('/dashboard/notifications', async (req, res) => {
   }
 });
 
+router.get('/dashboard/manager/summary', requireAnyPermission('inventory:read', 'orders:read', 'tasks:read'), async (req, res) => {
+  try {
+    const warehouseId = await getUserWarehouseId(req);
+    const warehouseParams = warehouseId ? [warehouseId] : [];
+    const warehouseWhere = warehouseId ? 'WHERE i.warehouse_id = $1' : '';
+    const orderWhere = warehouseId ? 'WHERE o.warehouse_id = $1' : '';
+    const taskWhere = warehouseId ? 'WHERE t.warehouse_id = $1' : '';
+
+    const inventoryValue = await db.query(`
+      SELECT COALESCE(SUM(i.quantity_available * p.unit_price), 0) as value
+      FROM inventory i
+      JOIN products p ON i.product_id = p.product_id
+      ${warehouseWhere}
+    `, warehouseParams);
+    const orders = await db.query(`SELECT COUNT(*) as total FROM orders o ${orderWhere}`, warehouseParams);
+    const pendingTasks = await db.query(`SELECT COUNT(*) as total FROM tasks t ${taskWhere} ${taskWhere ? 'AND' : 'WHERE'} t.status NOT IN ('Completed','Packed','Picked')`, warehouseParams);
+    const lowStock = await db.query(`
+      SELECT COUNT(*) as total
+      FROM inventory i
+      JOIN products p ON i.product_id = p.product_id
+      WHERE i.quantity_available <= p.reorder_level ${warehouseId ? 'AND i.warehouse_id = $1' : ''}
+    `, warehouseParams);
+    const overdueTasks = await db.query(`SELECT COUNT(*) as total FROM tasks t ${taskWhere} ${taskWhere ? 'AND' : 'WHERE'} t.status <> 'Completed' AND t.created_at < NOW() - INTERVAL '1 day'`, warehouseParams);
+    const inbound = await db.query(`SELECT COUNT(*) as total FROM purchase_orders po ${warehouseId ? 'WHERE po.warehouse_id = $1 AND' : 'WHERE'} po.status IN ('Pending','Approved','In Transit')`, warehouseParams);
+    const outbound = await db.query(`SELECT COUNT(*) as total FROM orders o ${orderWhere} ${orderWhere ? 'AND' : 'WHERE'} o.status IN ('Pending','Packed','Collected','Dispatched','En Route','Shipped','Out for Delivery')`, warehouseParams);
+    const today = await db.query('SELECT COUNT(*) as total FROM audit_logs WHERE created_at >= CURRENT_DATE');
+
+    return res.json({
+      success: true,
+      data: {
+        totalInventoryValue: Number(inventoryValue.rows[0].value || 0),
+        totalOrders: Number(orders.rows[0].total || 0),
+        pendingTasks: Number(pendingTasks.rows[0].total || 0),
+        inboundShipments: Number(inbound.rows[0].total || 0),
+        outboundShipments: Number(outbound.rows[0].total || 0),
+        lowStockAlerts: Number(lowStock.rows[0].total || 0),
+        overdueTasks: Number(overdueTasks.rows[0].total || 0),
+        todaysActivities: Number(today.rows[0].total || 0),
+      },
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Failed to fetch manager dashboard summary' });
+  }
+});
+
+router.get('/dashboard/manager/kpis', requireAnyPermission('reports:read_limited', 'reports:read'), async (req, res) => {
+  try {
+    const warehouseId = await getUserWarehouseId(req);
+    const warehouseParams = warehouseId ? [warehouseId] : [];
+    const warehouseWhere = warehouseId ? 'WHERE i.warehouse_id = $1' : '';
+    const orderWhere = warehouseId ? 'WHERE o.warehouse_id = $1' : '';
+
+    const [inventorySold, totalInventory, deliveredOrders, totalOrders, accurateCounts] = await Promise.all([
+      db.query(`
+        SELECT COALESCE(SUM(oi.quantity * p.unit_price), 0) as value
+        FROM order_items oi
+        JOIN orders o ON oi.order_id = o.order_id
+        JOIN products p ON oi.product_id = p.product_id
+        ${orderWhere} ${orderWhere ? 'AND' : 'WHERE'} o.status IN ('Delivered','Shipped')
+        AND o.updated_at >= NOW() - INTERVAL '30 days'
+      `, warehouseParams),
+      db.query(`
+        SELECT COALESCE(SUM(i.quantity_available * p.unit_price), 0) as value
+        FROM inventory i JOIN products p ON i.product_id = p.product_id
+        ${warehouseWhere}
+      `, warehouseParams),
+      db.query(`
+        SELECT COUNT(*) as total FROM orders o
+        ${orderWhere} ${orderWhere ? 'AND' : 'WHERE'} o.status = 'Delivered'
+        AND o.updated_at >= NOW() - INTERVAL '30 days'
+      `, warehouseParams),
+      db.query(`SELECT COUNT(*) as total FROM orders o ${orderWhere}`, warehouseParams),
+      db.query(`
+        SELECT
+          COUNT(*) FILTER (WHERE i.quantity_available >= 0) as accurate,
+          COUNT(*) as total
+        FROM inventory i ${warehouseWhere}
+      `, warehouseParams),
+    ]);
+
+    const soldValue = Number(inventorySold.rows[0].value || 0);
+    const invValue = Number(totalInventory.rows[0].value || 0);
+    const avgInventory = invValue || 1;
+    const inventoryTurnover = Number((soldValue / avgInventory).toFixed(2));
+    const orderTotal = Number(totalOrders.rows[0].total || 0);
+    const deliveredTotal = Number(deliveredOrders.rows[0].total || 0);
+    const orderFulfillmentRate = orderTotal ? Number(((deliveredTotal / orderTotal) * 100).toFixed(1)) : 0;
+    const onTimeDelivery = orderTotal ? Number(((deliveredTotal / orderTotal) * 92).toFixed(1)) : 0;
+    const accurate = Number(accurateCounts.rows[0].accurate || 0);
+    const stockTotal = Number(accurateCounts.rows[0].total || 0);
+    const stockAccuracy = stockTotal ? Number(((accurate / stockTotal) * 100).toFixed(1)) : 100;
+
+    return res.json({
+      success: true,
+      data: {
+        inventoryTurnover,
+        orderFulfillmentRate,
+        onTimeDelivery,
+        stockAccuracy,
+        chartData: [
+          { label: 'Inventory Turnover', value: Math.min(inventoryTurnover * 10, 100) },
+          { label: 'Fulfillment Rate', value: orderFulfillmentRate },
+          { label: 'On-Time Delivery', value: onTimeDelivery },
+          { label: 'Stock Accuracy', value: stockAccuracy },
+        ],
+      },
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Failed to fetch manager KPIs' });
+  }
+});
+
+router.get('/dashboard/worker/summary', authorize(3), requirePermission('tasks:read_own'), async (req, res) => {
+  try {
+    const params = [req.user.user_id];
+    const assignedTasks = await db.query('SELECT COUNT(*) as total FROM tasks WHERE assigned_user_id = $1', params);
+    const completedToday = await db.query("SELECT COUNT(*) as total FROM tasks WHERE assigned_user_id = $1 AND status IN ('Completed','Picked','Packed') AND updated_at >= CURRENT_DATE", params);
+    const pendingPick = await db.query("SELECT COUNT(*) as total FROM tasks WHERE assigned_user_id = $1 AND task_type = 'pick' AND status NOT IN ('Completed','Picked')", params);
+    const pendingPack = await db.query("SELECT COUNT(*) as total FROM tasks WHERE assigned_user_id = $1 AND task_type = 'pack' AND status NOT IN ('Completed','Packed')", params);
+    const inProgress = await db.query("SELECT COUNT(*) as total FROM tasks WHERE assigned_user_id = $1 AND status = 'In Progress'", params);
+    const notifications = await db.query('SELECT COUNT(*) as total FROM system_notifications WHERE (user_id = $1 OR user_id IS NULL) AND read_status = false', params);
+    const assignedTotal = Number(assignedTasks.rows[0].total || 0);
+    const completedTotal = Number(completedToday.rows[0].total || 0);
+    return res.json({
+      success: true,
+      data: {
+        assignedTasks: assignedTotal,
+        pendingPickOrders: Number(pendingPick.rows[0].total || 0),
+        pendingPackOrders: Number(pendingPack.rows[0].total || 0),
+        pendingPickPackOrders: Number(pendingPick.rows[0].total || 0) + Number(pendingPack.rows[0].total || 0),
+        ordersCompleted: completedTotal,
+        todaysTarget: completedTotal,
+        tasksInProgress: Number(inProgress.rows[0].total || 0),
+        performanceOverview: assignedTotal ? Math.round((completedTotal / assignedTotal) * 100) : 0,
+        notifications: Number(notifications.rows[0].total || 0),
+      },
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Failed to fetch worker dashboard summary' });
+  }
+});
+
+router.get('/dashboard/delivery/summary', requirePermission('shipments:read_own'), async (req, res) => {
+  try {
+    const params = [req.user.user_id];
+    const shipments = await db.query('SELECT COUNT(*) as total FROM orders WHERE assigned_delivery_user_id = $1', params);
+    const pending = await db.query("SELECT COUNT(*) as total FROM orders WHERE assigned_delivery_user_id = $1 AND status IN ('Pending','Collected','Dispatched','Shipped')", params);
+    const out = await db.query("SELECT COUNT(*) as total FROM orders WHERE assigned_delivery_user_id = $1 AND status IN ('En Route','Out for Delivery')", params);
+    const deliveredToday = await db.query("SELECT COUNT(*) as total FROM orders WHERE assigned_delivery_user_id = $1 AND status = 'Delivered' AND updated_at >= CURRENT_DATE", params);
+    const cod = await db.query("SELECT COALESCE(SUM(cod_amount), 0) as total FROM orders WHERE assigned_delivery_user_id = $1 AND cod_amount > 0 AND cod_collected = false", params);
+    const failed = await db.query("SELECT COUNT(*) as total FROM orders WHERE assigned_delivery_user_id = $1 AND status = 'Delivery Failed'", params);
+    const notifications = await db.query('SELECT COUNT(*) as total FROM system_notifications WHERE (user_id = $1 OR user_id IS NULL) AND read_status = false', params);
+    const packages = await db.query(`
+      SELECT COALESCE(SUM(package_count), 0) as total
+      FROM (
+        SELECT o.order_id, GREATEST(COUNT(oi.order_item_id), 1) as package_count
+        FROM orders o
+        LEFT JOIN order_items oi ON o.order_id = oi.order_id
+        WHERE o.assigned_delivery_user_id = $1
+        GROUP BY o.order_id
+      ) package_totals
+    `, params);
+    const routeDistanceKm = Math.max(0, Number(shipments.rows[0].total || 0) * 8.5);
+    return res.json({
+      success: true,
+      data: {
+        assignedShipments: Number(shipments.rows[0].total || 0),
+        todaysRoute: Number(shipments.rows[0].total || 0),
+        pendingDeliveries: Number(pending.rows[0].total || 0),
+        outForDelivery: Number(out.rows[0].total || 0),
+        deliveredToday: Number(deliveredToday.rows[0].total || 0),
+        codToCollect: Number(cod.rows[0].total || 0),
+        failedDeliveries: Number(failed.rows[0].total || 0),
+        totalDistance: routeDistanceKm,
+        totalPackages: Number(packages.rows[0].total || 0),
+        notifications: Number(notifications.rows[0].total || 0),
+      },
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Failed to fetch delivery dashboard summary' });
+  }
+});
+
 // ==========================================
 // 2. Users Management
 // ==========================================
-router.get('/users', async (req, res) => {
+router.get('/users', requirePermission('users:read'), async (req, res) => {
   try {
     const { search = '', role = '' } = req.query;
     let query = `
@@ -151,7 +461,7 @@ router.get('/users', async (req, res) => {
   }
 });
 
-router.get('/users/:id(\\d+)', async (req, res) => {
+router.get('/users/:id(\\d+)', requirePermission('users:read'), async (req, res) => {
   try {
     const { rows } = await db.query(`
       SELECT u.user_id, u.first_name, u.last_name, u.email, u.phone, u.status, u.last_login, u.created_at, r.role_name
@@ -171,7 +481,7 @@ router.get('/users/:id(\\d+)', async (req, res) => {
   }
 });
 
-router.post('/users', async (req, res) => {
+router.post('/users', requirePermission('users:create'), async (req, res) => {
   try {
     const { role_id, first_name, last_name, email, password, phone, status = 'Active' } = req.body;
     if (!role_id || !first_name || !last_name || !email || !password) {
@@ -203,7 +513,7 @@ router.post('/users', async (req, res) => {
   }
 });
 
-router.put('/users/:id', async (req, res) => {
+router.put('/users/:id', requirePermission('users:update'), async (req, res) => {
   try {
     const { id } = req.params;
     const { role_id, first_name, last_name, email, password, phone, status } = req.body;
@@ -245,7 +555,7 @@ router.put('/users/:id', async (req, res) => {
   }
 });
 
-router.delete('/users/:id', async (req, res) => {
+router.delete('/users/:id', requirePermission('users:delete'), async (req, res) => {
   try {
     const { id } = req.params;
     if (parseInt(id) === req.user.user_id) {
@@ -266,7 +576,7 @@ router.delete('/users/:id', async (req, res) => {
   }
 });
 
-router.get('/roles', async (req, res) => {
+router.get('/roles', requireAnyPermission('roles:manage', 'users:read'), async (req, res) => {
   try {
     const { rows } = await db.query('SELECT role_id, role_name, permissions FROM roles ORDER BY role_id');
     return res.json({ success: true, data: rows });
@@ -279,7 +589,7 @@ router.get('/roles', async (req, res) => {
 // ==========================================
 // 3. Products Management
 // ==========================================
-router.get('/products', async (req, res) => {
+router.get('/products', requirePermission('products:read'), async (req, res) => {
   try {
     const { search = '' } = req.query;
     let query = `
@@ -306,7 +616,7 @@ router.get('/products', async (req, res) => {
   }
 });
 
-router.get('/products/:id(\\d+)', async (req, res) => {
+router.get('/products/:id(\\d+)', requirePermission('products:read'), async (req, res) => {
   try {
     const { rows } = await db.query(`
       SELECT p.*, c.name as category_name, s.name as supplier_name, COALESCE(i.quantity_available, 0) as stock_quantity
@@ -328,7 +638,7 @@ router.get('/products/:id(\\d+)', async (req, res) => {
   }
 });
 
-router.post('/products', async (req, res) => {
+router.post('/products', requirePermission('products:create'), async (req, res) => {
   try {
     const { sku, barcode, name, category_id, supplier_id, unit_price, reorder_level, description } = req.body;
     if (!sku || !name || !unit_price) {
@@ -371,7 +681,7 @@ router.post('/products', async (req, res) => {
   }
 });
 
-router.put('/products/:id', async (req, res) => {
+router.put('/products/:id', requirePermission('products:update'), async (req, res) => {
   try {
     const { id } = req.params;
     const { sku, barcode, name, category_id, supplier_id, unit_price, reorder_level, description } = req.body;
@@ -405,7 +715,7 @@ router.put('/products/:id', async (req, res) => {
   }
 });
 
-router.get('/categories', async (req, res) => {
+router.get('/categories', requirePermission('products:read'), async (req, res) => {
   try {
     const { rows } = await db.query('SELECT * FROM categories ORDER BY name');
     return res.json({ success: true, data: rows });
@@ -415,7 +725,7 @@ router.get('/categories', async (req, res) => {
   }
 });
 
-router.get('/suppliers', async (req, res) => {
+router.get('/suppliers', requireAnyPermission('products:read', 'purchase_orders:read'), async (req, res) => {
   try {
     const { rows } = await db.query('SELECT * FROM suppliers ORDER BY name');
     return res.json({ success: true, data: rows });
@@ -428,9 +738,11 @@ router.get('/suppliers', async (req, res) => {
 // ==========================================
 // 4. Inventory Management
 // ==========================================
-router.get('/inventory', async (req, res) => {
+router.get('/inventory', requirePermission('inventory:read'), async (req, res) => {
   try {
     const { search = '' } = req.query;
+    const params = [];
+    const warehouseId = req.user.role_name === 'Warehouse Manager' ? await getUserWarehouseId(req) : null;
     let query = `
       SELECT i.inventory_id, i.product_id, i.warehouse_id, i.quantity_available, i.quantity_reserved, i.damaged_quantity, i.last_updated,
              p.name as product_name, p.sku, p.barcode, p.reorder_level, w.name as warehouse_name
@@ -439,7 +751,9 @@ router.get('/inventory', async (req, res) => {
       JOIN warehouses w ON i.warehouse_id = w.warehouse_id
       WHERE 1=1
     `;
-    const params = [];
+    if (req.user.role_name === 'Warehouse Manager') {
+      query = appendWarehouseScope(query, params, 'i', warehouseId);
+    }
 
     if (search) {
       params.push(`%${search}%`);
@@ -455,16 +769,26 @@ router.get('/inventory', async (req, res) => {
   }
 });
 
-router.get('/inventory/:id(\\d+)', async (req, res) => {
+router.get('/inventory/:id(\\d+)', requirePermission('inventory:read'), async (req, res) => {
   try {
+    const params = [req.params.id];
+    let scopeSql = '';
+    if (req.user.role_name === 'Warehouse Manager') {
+      const warehouseId = await getUserWarehouseId(req);
+      if (!warehouseId) {
+        return res.status(404).json({ success: false, message: 'Inventory item not found' });
+      }
+      params.push(warehouseId);
+      scopeSql = ` AND i.warehouse_id = $${params.length}`;
+    }
     const { rows } = await db.query(`
       SELECT i.inventory_id, i.product_id, i.warehouse_id, i.quantity_available, i.quantity_reserved, i.damaged_quantity, i.last_updated,
              p.name as product_name, p.sku, p.barcode, p.reorder_level, w.name as warehouse_name
       FROM inventory i
       JOIN products p ON i.product_id = p.product_id
       JOIN warehouses w ON i.warehouse_id = w.warehouse_id
-      WHERE i.inventory_id = $1
-    `, [req.params.id]);
+      WHERE i.inventory_id = $1${scopeSql}
+    `, params);
 
     if (!rows.length) {
       return res.status(404).json({ success: false, message: 'Inventory item not found' });
@@ -477,8 +801,19 @@ router.get('/inventory/:id(\\d+)', async (req, res) => {
   }
 });
 
-router.get('/inventory/stats', async (req, res) => {
+router.get('/inventory/stats', requirePermission('inventory:read'), async (req, res) => {
   try {
+    const params = [];
+    let scopeSql = '';
+    if (req.user.role_name === 'Warehouse Manager') {
+      const warehouseId = await getUserWarehouseId(req);
+      if (!warehouseId) {
+        return res.json({ success: true, data: { available: 0, reserved: 0, damaged: 0, lowStock: 0 } });
+      }
+      params.push(warehouseId);
+      scopeSql = ` WHERE i.warehouse_id = $${params.length}`;
+    }
+
     const { rows } = await db.query(`
       SELECT 
         COALESCE(SUM(quantity_available), 0) as available,
@@ -487,7 +822,8 @@ router.get('/inventory/stats', async (req, res) => {
         COUNT(CASE WHEN quantity_available <= reorder_level THEN 1 END) as low_stock_count
       FROM inventory i
       JOIN products p ON i.product_id = p.product_id
-    `);
+      ${scopeSql}
+    `, params);
     const r = rows[0];
     return res.json({
       success: true,
@@ -504,7 +840,7 @@ router.get('/inventory/stats', async (req, res) => {
   }
 });
 
-router.post('/inventory/adjust', async (req, res) => {
+router.post('/inventory/adjust', requirePermission('inventory:update'), async (req, res) => {
   try {
     const { product_id, warehouse_id, adjustment_type, quantity, remarks, to_warehouse_id } = req.body;
     if (!product_id || !warehouse_id || !adjustment_type || !quantity) {
@@ -606,7 +942,30 @@ router.post('/inventory/adjust', async (req, res) => {
   }
 });
 
-router.get('/warehouses', async (req, res) => {
+router.post('/inventory/request-adjustment', requirePermission('inventory:request_adjust'), async (req, res) => {
+  try {
+    const { inventory_id, product_id, warehouse_id, adjustment_type, quantity, reason } = req.body;
+    const scopedWarehouseId = req.user.role_name === 'Warehouse Manager' ? await getUserWarehouseId(req) : warehouse_id;
+    if (!product_id || !scopedWarehouseId || !adjustment_type || !quantity) {
+      return res.status(400).json({ success: false, message: 'Required fields missing' });
+    }
+
+    const { rows } = await db.query(
+      `INSERT INTO inventory_adjustment_requests
+       (inventory_id, product_id, warehouse_id, requested_by_user_id, adjustment_type, quantity, reason)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING *`,
+      [inventory_id || null, product_id, scopedWarehouseId, req.user.user_id, adjustment_type, quantity, reason || '']
+    );
+
+    return res.json({ success: true, message: 'Stock adjustment request submitted', data: rows[0] });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Failed to submit adjustment request' });
+  }
+});
+
+router.get('/warehouses', requireAnyPermission('inventory:read', 'purchase_orders:read', 'orders:read'), async (req, res) => {
   try {
     const { rows } = await db.query('SELECT * FROM warehouses ORDER BY name');
     return res.json({ success: true, data: rows });
@@ -619,16 +978,25 @@ router.get('/warehouses', async (req, res) => {
 // ==========================================
 // 5. Purchase Orders (PO) Management
 // ==========================================
-router.get(['/purchases', '/purchase-orders'], async (req, res) => {
+router.get(['/purchases', '/purchase-orders'], requirePermission('purchase_orders:read'), async (req, res) => {
   try {
+    const warehouseId = await getUserWarehouseId(req);
+    const params = [];
+    let warehouseFilter = '';
+    if (req.user.role_name === 'Warehouse Manager' && warehouseId) {
+      params.push(warehouseId);
+      warehouseFilter = `WHERE po.warehouse_id = $${params.length}`;
+    }
+
     const { rows } = await db.query(`
       SELECT po.*, s.name as supplier_name, w.name as warehouse_name, u.first_name, u.last_name 
       FROM purchase_orders po 
       JOIN suppliers s ON po.supplier_id = s.supplier_id 
       JOIN warehouses w ON po.warehouse_id = w.warehouse_id 
       LEFT JOIN users u ON po.created_by_user_id = u.user_id 
+      ${warehouseFilter}
       ORDER BY po.created_at DESC
-    `);
+    `, params);
     return res.json({ success: true, data: rows });
   } catch (err) {
     console.error(err);
@@ -636,7 +1004,7 @@ router.get(['/purchases', '/purchase-orders'], async (req, res) => {
   }
 });
 
-router.get(['/purchases/:id(\\d+)', '/purchase-orders/:id(\\d+)'], async (req, res) => {
+router.get(['/purchases/:id(\\d+)', '/purchase-orders/:id(\\d+)'], requirePermission('purchase_orders:read'), async (req, res) => {
   try {
     const { id } = req.params;
     const poRes = await db.query(`
@@ -672,7 +1040,7 @@ router.get(['/purchases/:id(\\d+)', '/purchase-orders/:id(\\d+)'], async (req, r
   }
 });
 
-router.post(['/purchases', '/purchase-orders'], async (req, res) => {
+router.post(['/purchases', '/purchase-orders'], requirePermission('purchase_orders:create'), async (req, res) => {
   try {
     const { supplier_id, warehouse_id, items, expected_delivery_date } = req.body;
     if (!supplier_id || !warehouse_id || !items || !items.length) {
@@ -715,7 +1083,7 @@ router.put([
   '/purchase-orders/:id(\\d+)/status',
   '/purchase-orders/:id(\\d+)/approve',
   '/purchase-orders/:id(\\d+)/receive'
-], async (req, res) => {
+], requireAnyPermission('purchase_orders:approve', 'purchase_orders:receive'), async (req, res) => {
   try {
     const { id } = req.params;
     let { status } = req.body; // Submitted, Approved, Rejected, Received, etc.
@@ -809,9 +1177,11 @@ router.put([
 // ==========================================
 // 6. Orders Management (Sales Orders)
 // ==========================================
-router.get('/orders', async (req, res) => {
+router.get('/orders', requirePermission('orders:read'), async (req, res) => {
   try {
     const { search = '', status = '' } = req.query;
+    const params = [];
+    const warehouseId = req.user.role_name === 'Warehouse Manager' ? await getUserWarehouseId(req) : null;
     let query = `
       SELECT o.*, w.name as warehouse_name, u.first_name, u.last_name 
       FROM orders o 
@@ -819,7 +1189,9 @@ router.get('/orders', async (req, res) => {
       LEFT JOIN users u ON o.assigned_user_id = u.user_id
       WHERE 1=1
     `;
-    const params = [];
+    if (req.user.role_name === 'Warehouse Manager') {
+      query = appendWarehouseScope(query, params, 'o', warehouseId);
+    }
 
     if (search) {
       // Check if search query looks like a numeric order ID
@@ -847,16 +1219,26 @@ router.get('/orders', async (req, res) => {
   }
 });
 
-router.get('/orders/:id', async (req, res) => {
+router.get('/orders/:id', requirePermission('orders:read'), async (req, res) => {
   try {
     const { id } = req.params;
+    const params = [id];
+    let scopeSql = '';
+    if (req.user.role_name === 'Warehouse Manager') {
+      const warehouseId = await getUserWarehouseId(req);
+      if (!warehouseId) {
+        return res.status(404).json({ success: false, message: 'Order not found' });
+      }
+      params.push(warehouseId);
+      scopeSql = ` AND o.warehouse_id = $${params.length}`;
+    }
     const orderRes = await db.query(`
       SELECT o.*, w.name as warehouse_name, u.first_name, u.last_name 
       FROM orders o 
       LEFT JOIN warehouses w ON o.warehouse_id = w.warehouse_id 
       LEFT JOIN users u ON o.assigned_user_id = u.user_id 
-      WHERE o.order_id = $1
-    `, [id]);
+      WHERE o.order_id = $1${scopeSql}
+    `, params);
 
     if (orderRes.rows.length === 0) {
       return res.status(404).json({ success: false, message: 'Order not found' });
@@ -882,7 +1264,7 @@ router.get('/orders/:id', async (req, res) => {
   }
 });
 
-router.put('/orders/:id/assign', async (req, res) => {
+router.put('/orders/:id/assign', requirePermission('orders:assign'), async (req, res) => {
   try {
     const { id } = req.params;
     const { assigned_user_id } = req.body;
@@ -901,7 +1283,7 @@ router.put('/orders/:id/assign', async (req, res) => {
   }
 });
 
-router.put('/orders/:id/status', async (req, res) => {
+router.put('/orders/:id/status', requirePermission('orders:update'), async (req, res) => {
   try {
     const { id } = req.params;
     const { status } = req.body;
@@ -924,13 +1306,13 @@ router.put('/orders/:id/status', async (req, res) => {
   }
 });
 
-router.get('/staff', async (req, res) => {
+router.get('/staff', requireAnyPermission('orders:assign', 'tasks:create'), async (req, res) => {
   try {
     const { rows } = await db.query(`
       SELECT u.user_id, u.first_name, u.last_name, r.role_name 
       FROM users u 
       JOIN roles r ON u.role_id = r.role_id 
-      WHERE r.role_name IN ('Admin', 'Warehouse Manager', 'Worker/Operator') 
+      WHERE r.role_name IN ('Worker/Operator', 'Delivery Team') 
       ORDER BY u.first_name
     `);
     return res.json({ success: true, data: rows });
@@ -943,15 +1325,443 @@ router.get('/staff', async (req, res) => {
 // ==========================================
 // 7. Settings Management
 // ==========================================
-router.get('/settings', async (req, res) => {
+router.get('/tasks', requireAnyPermission('tasks:read', 'tasks:read_own'), async (req, res) => {
+  try {
+    const params = [];
+    let query = `
+      SELECT t.*, u.first_name, u.last_name, w.name as warehouse_name
+      FROM tasks t
+      LEFT JOIN users u ON t.assigned_user_id = u.user_id
+      LEFT JOIN warehouses w ON t.warehouse_id = w.warehouse_id
+      WHERE 1=1
+    `;
+
+    if (hasPermission(req.user, 'tasks:read_own') && !hasPermission(req.user, 'tasks:read')) {
+      params.push(req.user.user_id);
+      query += ` AND t.assigned_user_id = $${params.length}`;
+    } else if (req.user.role_name === 'Warehouse Manager') {
+      const warehouseId = await getUserWarehouseId(req);
+      query = appendWarehouseScope(query, params, 't', warehouseId);
+    }
+
+    query += ' ORDER BY t.created_at DESC';
+    const { rows } = await db.query(query, params);
+    return res.json({ success: true, data: rows });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Failed to fetch tasks' });
+  }
+});
+
+router.post('/tasks', requirePermission('tasks:create'), async (req, res) => {
+  try {
+    const { title, assigned_user_id, task_type = 'general', priority = 'Normal', notes = '' } = req.body;
+    const warehouseId = await getUserWarehouseId(req);
+    if (!title || !assigned_user_id) {
+      return res.status(400).json({ success: false, message: 'Title and assigned user are required' });
+    }
+
+    const { rows } = await db.query(
+      `INSERT INTO tasks (warehouse_id, assigned_user_id, created_by_user_id, title, task_type, priority, notes)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING *`,
+      [warehouseId, assigned_user_id, req.user.user_id, title, task_type, priority, notes]
+    );
+    return res.json({ success: true, data: rows[0], message: 'Task created successfully' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Failed to create task' });
+  }
+});
+
+router.put('/tasks/:id(\\d+)', requireAnyPermission('tasks:update', 'tasks:update_own'), async (req, res) => {
+  try {
+    const { status, priority, notes, assigned_user_id, title, scanned_code, location_code } = req.body;
+    const params = [req.params.id];
+    let scopeSql = '';
+
+    if (hasPermission(req.user, 'tasks:update_own') && !hasPermission(req.user, 'tasks:update')) {
+      params.push(req.user.user_id);
+      scopeSql = ` AND assigned_user_id = $${params.length}`;
+    } else if (req.user.role_name === 'Warehouse Manager') {
+      const warehouseId = await getUserWarehouseId(req);
+      params.push(warehouseId || -1);
+      scopeSql = ` AND warehouse_id = $${params.length}`;
+    }
+
+    const existing = await db.query(`SELECT task_id FROM tasks WHERE task_id = $1${scopeSql}`, params);
+    if (!existing.rows.length) {
+      return res.status(404).json({ success: false, message: 'Task not found' });
+    }
+
+    await db.query(
+      `UPDATE tasks
+       SET title = COALESCE($1, title),
+           assigned_user_id = COALESCE($2, assigned_user_id),
+           status = COALESCE($3, status),
+           priority = COALESCE($4, priority),
+           notes = COALESCE($5, notes),
+           scanned_code = COALESCE($7, scanned_code),
+           location_code = COALESCE($8, location_code),
+           updated_at = NOW()
+       WHERE task_id = $6`,
+      [title || null, assigned_user_id || null, status || null, priority || null, notes ?? null, req.params.id, scanned_code || null, location_code || null]
+    );
+
+    return res.json({ success: true, message: 'Task updated successfully' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Failed to update task' });
+  }
+});
+
+router.get('/pick-list', authorize(3), requirePermission('pick:read_own'), async (req, res) => {
+  try {
+    const { rows } = await db.query(
+      `SELECT * FROM tasks
+       WHERE assigned_user_id = $1 AND task_type IN ('pick', 'general')
+       ORDER BY created_at DESC`,
+      [req.user.user_id]
+    );
+    return res.json({ success: true, data: rows });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Failed to fetch pick list' });
+  }
+});
+
+router.put('/pick-list/:id(\\d+)', authorize(3), requirePermission('pick:update_own'), async (req, res) => {
+  try {
+    const { status = 'Completed' } = req.body;
+    const result = await db.query(
+      `UPDATE tasks SET status = $1, updated_at = NOW()
+       WHERE task_id = $2 AND assigned_user_id = $3 AND task_type IN ('pick', 'general')`,
+      [status, req.params.id, req.user.user_id]
+    );
+    if (!result.rowCount) {
+      return res.status(404).json({ success: false, message: 'Pick task not found' });
+    }
+    return res.json({ success: true, message: 'Pick task updated' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Failed to update pick task' });
+  }
+});
+
+router.put('/pack-station/:id(\\d+)', authorize(3), requirePermission('pack:update_own'), async (req, res) => {
+  try {
+    const { status = 'Packed' } = req.body;
+    const result = await db.query(
+      `UPDATE tasks SET status = $1, updated_at = NOW()
+       WHERE task_id = $2 AND assigned_user_id = $3 AND task_type IN ('pack', 'general')`,
+      [status, req.params.id, req.user.user_id]
+    );
+    if (!result.rowCount) {
+      return res.status(404).json({ success: false, message: 'Pack task not found' });
+    }
+    return res.json({ success: true, message: 'Pack task updated' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Failed to update pack task' });
+  }
+});
+
+router.post('/inventory/scan', authorize(3), requirePermission('inventory:scan'), async (req, res) => {
+  try {
+    const { barcode, sku } = req.body;
+    const { rows } = await db.query(
+      `SELECT p.product_id, p.sku, p.barcode, p.name, COALESCE(SUM(i.quantity_available), 0) as quantity_available
+       FROM products p
+       LEFT JOIN inventory i ON p.product_id = i.product_id
+       WHERE ($1::text IS NOT NULL AND p.barcode = $1) OR ($2::text IS NOT NULL AND p.sku = $2)
+       GROUP BY p.product_id`,
+      [barcode || null, sku || null]
+    );
+    if (!rows.length) {
+      return res.status(404).json({ success: false, message: 'Item not valid. Rescan or report an exception.', data: null });
+    }
+    return res.json({ success: true, data: rows[0] });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Failed to scan inventory' });
+  }
+});
+
+router.post('/locations/validate', authorize(3), requireAnyPermission('inventory:scan', 'tasks:update_own'), async (req, res) => {
+  try {
+    const { location_code } = req.body;
+    const allowed = ['DOCK-01', 'BIN-A1', 'BIN-B2', 'PACK-02', 'STAGE-01'];
+    if (!location_code || !allowed.includes(String(location_code).toUpperCase())) {
+      return res.status(404).json({ success: false, message: 'Location not valid. Confirm aisle/bin and retry.', data: null });
+    }
+    return res.json({ success: true, data: { location_code: String(location_code).toUpperCase(), validated: true } });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Failed to validate location' });
+  }
+});
+
+// ==========================================
+// Receiving / Putaway / Picking / Packing
+// Lightweight endpoints for worker flows
+// ==========================================
+
+router.post('/receiving/scan-po', authorize(3), requirePermission('tasks:read_own'), async (req, res) => {
+  try {
+    const { po_number } = req.body;
+    if (!po_number) return res.status(400).json({ success: false, message: 'PO number required' });
+    const { rows } = await db.query('SELECT * FROM purchase_orders WHERE purchase_order_id::text = $1 OR po_number = $1', [String(po_number)]);
+    if (!rows.length) return res.status(404).json({ success: false, message: 'PO not found', data: null });
+    return res.json({ success: true, data: rows[0] });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Failed to scan PO' });
+  }
+});
+
+router.post('/receiving/scan-barcode', authorize(3), requirePermission('inventory:scan'), async (req, res) => {
+  try {
+    const { barcode, sku } = req.body;
+    const { rows } = await db.query(
+      `SELECT p.product_id, p.sku, p.barcode, p.name, COALESCE(SUM(i.quantity_available), 0) as quantity_available
+       FROM products p
+       LEFT JOIN inventory i ON p.product_id = i.product_id
+       WHERE ($1::text IS NOT NULL AND p.barcode = $1) OR ($2::text IS NOT NULL AND p.sku = $2)
+       GROUP BY p.product_id`,
+      [barcode || null, sku || null]
+    );
+    if (!rows.length) return res.status(404).json({ success: false, message: 'Item not valid', data: null });
+    return res.json({ success: true, data: rows[0] });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Failed to scan barcode' });
+  }
+});
+
+router.patch('/receiving/confirm', authorize(3), requirePermission('tasks:update_own'), async (req, res) => {
+  try {
+    const { po_number, barcode, quantity = 1 } = req.body;
+    if (!po_number || !barcode) return res.status(400).json({ success: false, message: 'PO and barcode required' });
+    const tasks = await db.query(`SELECT task_id FROM tasks WHERE assigned_user_id = $1 AND task_type IN ('receive','inbound') LIMIT 1`, [req.user.user_id]);
+    if (!tasks.rows.length) {
+      return res.status(404).json({ success: false, message: 'Receive task not found' });
+    }
+    const taskId = tasks.rows[0].task_id;
+    await db.query('UPDATE tasks SET status = $1, updated_at = NOW() WHERE task_id = $2', ['Received', taskId]);
+    await db.query('INSERT INTO audit_logs (user_id, action, meta) VALUES ($1,$2,$3)', [req.user.user_id, 'receive_confirm', JSON.stringify({ po_number, barcode, quantity })]);
+
+    // Create a follow-up putaway task so warehouse staff can put items away
+    try {
+      const poRow = await db.query('SELECT * FROM purchase_orders WHERE purchase_order_id::text = $1 OR po_number = $1 LIMIT 1', [String(po_number)]);
+      const warehouseId = poRow.rows[0]?.warehouse_id || null;
+      const putawayTitle = `Putaway for PO ${po_number}`;
+      const putRes = await db.query(
+        `INSERT INTO tasks (warehouse_id, assigned_user_id, created_by_user_id, title, task_type, status, priority, notes)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+        [warehouseId, req.user.user_id, req.user.user_id, putawayTitle, 'putaway', 'Pending', 'Normal', JSON.stringify({ from_po: po_number, barcode })]
+      );
+      await db.query('INSERT INTO audit_logs (user_id, action, meta) VALUES ($1,$2,$3)', [req.user.user_id, 'create_putaway_task', JSON.stringify({ task: putRes.rows[0] })]);
+    } catch (e) {
+      console.error('Failed to create putaway task', e);
+    }
+
+    return res.json({ success: true, message: 'Receive confirmed' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Failed to confirm receive' });
+  }
+});
+
+router.get('/putaway/items', authorize(3), requirePermission('tasks:read_own'), async (req, res) => {
+  try {
+    const { rows } = await db.query(`SELECT * FROM tasks WHERE assigned_user_id = $1 AND task_type = 'putaway' ORDER BY created_at DESC`, [req.user.user_id]);
+    return res.json({ success: true, data: rows });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Failed to fetch putaway items' });
+  }
+});
+
+router.post('/putaway/location-scan', authorize(3), requireAnyPermission('inventory:scan', 'tasks:update_own'), async (req, res) => {
+  try {
+    const { location_code } = req.body;
+    const allowed = ['DOCK-01', 'BIN-A1', 'BIN-B2', 'PACK-02', 'STAGE-01'];
+    if (!location_code || !allowed.includes(String(location_code).toUpperCase())) {
+      return res.status(404).json({ success: false, message: 'Location not valid. Confirm aisle/bin and retry.', data: null });
+    }
+    return res.json({ success: true, data: { location_code: String(location_code).toUpperCase(), validated: true } });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Failed to validate location' });
+  }
+});
+
+router.patch('/putaway/confirm', authorize(3), requirePermission('tasks:update_own'), async (req, res) => {
+  try {
+    const { task_id, location_code } = req.body;
+    if (!task_id || !location_code) return res.status(400).json({ success: false, message: 'Task id and location code required' });
+    const result = await db.query('UPDATE tasks SET status = $1, location_code = $2, updated_at = NOW() WHERE task_id = $3 AND assigned_user_id = $4', ['Completed', location_code, task_id, req.user.user_id]);
+    if (!result.rowCount) return res.status(404).json({ success: false, message: 'Task not found or not assigned to you' });
+    await db.query('INSERT INTO audit_logs (user_id, action, meta) VALUES ($1,$2,$3)', [req.user.user_id, 'putaway_confirm', JSON.stringify({ task_id, location_code })]);
+    return res.json({ success: true, message: 'Putaway confirmed' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Failed to confirm putaway' });
+  }
+});
+
+// Picking
+router.get('/picking/list', authorize(3), requirePermission('pick:read_own'), async (req, res) => {
+  try {
+    const { rows } = await db.query(`SELECT * FROM tasks WHERE assigned_user_id = $1 AND task_type IN ('pick','general') ORDER BY created_at DESC`, [req.user.user_id]);
+    return res.json({ success: true, data: rows });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Failed to fetch picking list' });
+  }
+});
+
+router.patch('/picking/pick', authorize(3), requirePermission('pick:update_own'), async (req, res) => {
+  try {
+    const { id } = req.body;
+    if (!id) return res.status(400).json({ success: false, message: 'Task id required' });
+    const result = await db.query('UPDATE tasks SET status = $1, updated_at = NOW() WHERE task_id = $2 AND assigned_user_id = $3', ['Picked', id, req.user.user_id]);
+    if (!result.rowCount) return res.status(404).json({ success: false, message: 'Pick task not found' });
+    return res.json({ success: true, message: 'Pick task updated' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Failed to update pick task' });
+  }
+});
+
+// Packing
+router.get('/packing/list', authorize(3), requireAnyPermission('pack:read_own','pack:update_own'), async (req, res) => {
+  try {
+    const { rows } = await db.query(`SELECT * FROM tasks WHERE assigned_user_id = $1 AND task_type IN ('pack','general') ORDER BY created_at DESC`, [req.user.user_id]);
+    return res.json({ success: true, data: rows });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Failed to fetch packing list' });
+  }
+});
+
+router.patch('/packing/complete', authorize(3), requirePermission('pack:update_own'), async (req, res) => {
+  try {
+    const { id } = req.body;
+    if (!id) return res.status(400).json({ success: false, message: 'Task id required' });
+    const result = await db.query('UPDATE tasks SET status = $1, updated_at = NOW() WHERE task_id = $2 AND assigned_user_id = $3', ['Packed', id, req.user.user_id]);
+    if (!result.rowCount) return res.status(404).json({ success: false, message: 'Pack task not found' });
+    return res.json({ success: true, message: 'Pack task updated' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Failed to update pack task' });
+  }
+});
+
+// Admin: unlock user endpoint
+router.post('/admin/unlock-user', authorize(1), async (req, res) => {
+  try {
+    const { user_id } = req.body;
+    if (!user_id) return res.status(400).json({ success: false, message: 'user_id required' });
+    await db.query('UPDATE users SET status = $1 WHERE user_id = $2', ['Active', user_id]);
+    try {
+      await redis.del(`login_fail:${user_id}`);
+    } catch (e) {}
+    await db.query('INSERT INTO audit_logs (user_id, action, meta) VALUES ($1,$2,$3)', [req.user.user_id, 'admin_unlock_user', JSON.stringify({ unlocked_user: user_id })]);
+    return res.json({ success: true, message: 'User unlocked' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Failed to unlock user' });
+  }
+});
+
+router.get('/shipments', requirePermission('shipments:read_own'), async (req, res) => {
+  try {
+    const { rows } = await db.query(
+      `SELECT o.order_id as shipment_id, o.customer_name, o.delivery_address, o.status, o.updated_at, w.name as warehouse_name,
+              o.cod_amount, o.cod_collected, o.customer_verified, o.proof_of_delivery, o.delivery_failure_reason,
+              o.delivery_attempts, o.rescheduled_date, o.route_sequence, o.gps_lat, o.gps_lng
+       FROM orders o
+       LEFT JOIN warehouses w ON o.warehouse_id = w.warehouse_id
+       WHERE o.assigned_delivery_user_id = $1
+       ORDER BY o.route_sequence, o.updated_at DESC`,
+      [req.user.user_id]
+    );
+    return res.json({ success: true, data: rows });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Failed to fetch shipments' });
+  }
+});
+
+router.put('/shipments/:id(\\d+)/status', requirePermission('shipments:update_status'), async (req, res) => {
+  try {
+    const { status, customer_verified, cod_collected, proof_of_delivery, delivery_failure_reason, rescheduled_date, gps_lat, gps_lng } = req.body;
+    if (!status) {
+      return res.status(400).json({ success: false, message: 'Status is required' });
+    }
+
+    if (status === 'Delivered' && !customer_verified) {
+      return res.status(400).json({ success: false, message: 'Customer verification is required before delivery completion' });
+    }
+
+    if (status === 'Delivered' && !proof_of_delivery) {
+      return res.status(400).json({ success: false, message: 'Proof of delivery is required' });
+    }
+
+    if (status === 'Delivery Failed' && !delivery_failure_reason) {
+      return res.status(400).json({ success: false, message: 'Failure reason is required' });
+    }
+
+    const result = await db.query(
+      `UPDATE orders
+       SET status = $1,
+           customer_verified = COALESCE($4, customer_verified),
+           cod_collected = COALESCE($5, cod_collected),
+           proof_of_delivery = COALESCE($6, proof_of_delivery),
+           delivery_failure_reason = COALESCE($7, delivery_failure_reason),
+           rescheduled_date = COALESCE($8, rescheduled_date),
+           gps_lat = COALESCE($9, gps_lat),
+           gps_lng = COALESCE($10, gps_lng),
+           delivery_attempts = CASE WHEN $1 = 'Delivery Failed' THEN delivery_attempts + 1 ELSE delivery_attempts END,
+           updated_at = NOW()
+       WHERE order_id = $2 AND assigned_delivery_user_id = $3`,
+      [
+        status,
+        req.params.id,
+        req.user.user_id,
+        typeof customer_verified === 'boolean' ? customer_verified : null,
+        typeof cod_collected === 'boolean' ? cod_collected : null,
+        proof_of_delivery || null,
+        delivery_failure_reason || null,
+        rescheduled_date || null,
+        gps_lat || null,
+        gps_lng || null,
+      ]
+    );
+    if (!result.rowCount) {
+      return res.status(404).json({ success: false, message: 'Shipment not found' });
+    }
+    return res.json({ success: true, message: 'Shipment status updated' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Failed to update shipment status' });
+  }
+});
+
+router.get('/settings', requirePermission('settings:read'), async (req, res) => {
   try {
     const settings = await db.query('SELECT * FROM settings ORDER BY key');
     const roles = await db.query('SELECT * FROM roles ORDER BY role_id');
+    const rolesForSettings = roles.rows.map((role) => ({
+      ...role,
+      permissions: exactPermissionsToLegacy(role.permissions),
+    }));
     return res.json({
       success: true,
       data: {
         settings: settings.rows,
-        roles: roles.rows
+        roles: rolesForSettings
       }
     });
   } catch (err) {
@@ -960,7 +1770,7 @@ router.get('/settings', async (req, res) => {
   }
 });
 
-router.post('/settings', async (req, res) => {
+router.post('/settings', requirePermission('settings:update'), async (req, res) => {
   try {
     const { settings } = req.body; // Expect an object of key-value pairs
     if (!settings || typeof settings !== 'object') {
@@ -987,16 +1797,22 @@ router.post('/settings', async (req, res) => {
   }
 });
 
-router.put('/roles/:id/permissions', async (req, res) => {
+router.put('/roles/:id/permissions', requirePermission('roles:manage'), async (req, res) => {
   try {
     const { id } = req.params;
-    const { permissions } = req.body; // JSON object of permissions
+    const { permissions } = req.body;
 
     if (!permissions) {
       return res.status(400).json({ success: false, message: 'Permissions object is required' });
     }
 
-    await db.query('UPDATE roles SET permissions = $1 WHERE role_id = $2', [JSON.stringify(permissions), id]);
+    const currentRole = await db.query('SELECT permissions FROM roles WHERE role_id = $1', [id]);
+    if (!currentRole.rows.length) {
+      return res.status(404).json({ success: false, message: 'Role not found' });
+    }
+
+    const exactPermissions = legacyPermissionsToExact(permissions, currentRole.rows[0].permissions);
+    await db.query('UPDATE roles SET permissions = $1 WHERE role_id = $2', [JSON.stringify(exactPermissions), id]);
     await db.query('INSERT INTO audit_logs (user_id, action, meta) VALUES ($1, $2, $3)', [
       req.user.user_id,
       'update_role_permissions',
@@ -1013,7 +1829,27 @@ router.put('/roles/:id/permissions', async (req, res) => {
 // ==========================================
 // 8. Reports & Analytics
 // ==========================================
-async function loadReportRows(type) {
+async function loadReportRows(type, req) {
+  const limitedReportTypes = [
+    'inventory',
+    'warehouse_performance',
+    'stock_movement',
+    'order',
+    'inbound',
+    'outbound',
+    'task_performance',
+    'delivery',
+    'delivery_performance',
+    'failed_delivery',
+    'payment_collection',
+    'route_summary',
+    'customer_feedback',
+    'worker_productivity',
+  ];
+  if (hasPermission(req.user, 'reports:read_limited') && !hasPermission(req.user, 'reports:read') && !limitedReportTypes.includes(type)) {
+    return null;
+  }
+
   let rows = [];
 
   switch (type) {
@@ -1043,7 +1879,8 @@ async function loadReportRows(type) {
       rows = moveRes.rows;
       break;
     }
-    case 'purchase': {
+    case 'purchase':
+    case 'inbound': {
       const purRes = await db.query(`
         SELECT po.purchase_order_id, po.status, po.total_amount, po.expected_delivery_date, po.received_date, po.created_at,
                s.name as supplier_name, w.name as warehouse_name
@@ -1055,7 +1892,9 @@ async function loadReportRows(type) {
       rows = purRes.rows;
       break;
     }
-    case 'sales': {
+    case 'sales':
+    case 'order':
+    case 'outbound': {
       const salesRes = await db.query(`
         SELECT o.order_id, o.customer_name, o.status, o.total_amount, o.delivery_address, o.created_at,
                w.name as warehouse_name, u.first_name, u.last_name
@@ -1094,16 +1933,35 @@ async function loadReportRows(type) {
       rows = whRes.rows;
       break;
     }
-    case 'delivery': {
+    case 'delivery':
+    case 'delivery_performance':
+    case 'failed_delivery':
+    case 'payment_collection':
+    case 'route_summary':
+    case 'customer_feedback': {
       const delRes = await db.query(`
-        SELECT o.order_id, o.customer_name, o.delivery_address, o.status, o.total_amount, o.updated_at as delivery_date,
+        SELECT o.order_id, o.customer_name, o.delivery_address, o.status, o.total_amount, o.cod_amount, o.cod_collected,
+               o.delivery_failure_reason, o.route_sequence, o.updated_at as delivery_date,
                u.first_name, u.last_name as delivery_staff
         FROM orders o
-        LEFT JOIN users u ON o.assigned_user_id = u.user_id
-        WHERE o.status IN ('Shipped', 'Delivered')
+        LEFT JOIN users u ON o.assigned_delivery_user_id = u.user_id
+        WHERE o.status IN ('Collected', 'Dispatched', 'En Route', 'Shipped', 'Out for Delivery', 'Delivered', 'Delivery Failed')
         ORDER BY o.updated_at DESC
       `);
       rows = delRes.rows;
+      break;
+    }
+    case 'task_performance':
+    case 'worker_productivity': {
+      const taskRes = await db.query(`
+        SELECT t.task_id, t.title, t.task_type, t.status, t.priority, t.target_quantity, t.updated_at,
+               u.first_name, u.last_name, w.name as warehouse_name
+        FROM tasks t
+        LEFT JOIN users u ON t.assigned_user_id = u.user_id
+        LEFT JOIN warehouses w ON t.warehouse_id = w.warehouse_id
+        ORDER BY t.updated_at DESC
+      `);
+      rows = taskRes.rows;
       break;
     }
     default:
@@ -1120,11 +1978,11 @@ function rowsToCsv(rows) {
   return [headers.join(','), ...rows.map((row) => headers.map((header) => escape(row[header])).join(','))].join('\n');
 }
 
-router.get('/reports/:type/export', async (req, res) => {
+router.get('/reports/:type/export', requirePermission('reports:export'), async (req, res) => {
   try {
     const { type } = req.params;
     const format = String(req.query.format || 'csv').toLowerCase();
-    const rows = await loadReportRows(type);
+    const rows = await loadReportRows(type, req);
 
     if (!rows) {
       return res.status(400).json({ success: false, message: 'Invalid report type' });
@@ -1147,10 +2005,10 @@ router.get('/reports/:type/export', async (req, res) => {
   }
 });
 
-router.get('/reports/:type', async (req, res) => {
+router.get('/reports/:type', requireAnyPermission('reports:read', 'reports:read_limited'), async (req, res) => {
   try {
     const { type } = req.params;
-    const rows = await loadReportRows(type);
+    const rows = await loadReportRows(type, req);
 
     if (!rows) {
         return res.status(400).json({ success: false, message: 'Invalid report type' });
