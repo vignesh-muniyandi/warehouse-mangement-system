@@ -17,6 +17,13 @@ import PackItems from './pages/PackItems';
 import Reports from './pages/Reports';
 import DeliveryDashboard from './pages/DeliveryDashboard';
 import Shipments from './pages/Shipments';
+import ShipmentDetails from './pages/ShipmentDetails';
+import RouteTracking from './pages/RouteTracking';
+import CollectShipment from './pages/CollectShipment';
+import DeliveryConfirmation from './pages/DeliveryConfirmation';
+import FailedDeliveryForm from './pages/FailedDeliveryForm';
+import DaySummary from './pages/DaySummary';
+import ReportsDelivery from './pages/ReportsDelivery';
 import { ProtectedRoute } from './components/ProtectedRoute';
 import { useAuth } from './context/AuthContext';
 import { roleRouteMap, roleIdRouteMap } from './hooks/usePermission';
@@ -135,6 +142,13 @@ function App() {
             </ProtectedRoute>
           }
         />
+        <Route path="/delivery/shipment/:id" element={<ProtectedRoute allowedRoleIds={[4]}><ShipmentDetails /></ProtectedRoute>} />
+        <Route path="/delivery/track" element={<ProtectedRoute allowedRoleIds={[4]}><RouteTracking /></ProtectedRoute>} />
+        <Route path="/delivery/collect" element={<ProtectedRoute allowedRoleIds={[4]}><CollectShipment /></ProtectedRoute>} />
+        <Route path="/delivery/confirm" element={<ProtectedRoute allowedRoleIds={[4]}><DeliveryConfirmation /></ProtectedRoute>} />
+        <Route path="/delivery/failed" element={<ProtectedRoute allowedRoleIds={[4]}><FailedDeliveryForm /></ProtectedRoute>} />
+        <Route path="/delivery/day-summary" element={<ProtectedRoute allowedRoleIds={[4]}><DaySummary /></ProtectedRoute>} />
+        <Route path="/delivery/reports" element={<ProtectedRoute allowedRoleIds={[4]}><ReportsDelivery /></ProtectedRoute>} />
         <Route path="/dashboard/admin/*" element={<LegacyDashboardRedirect />} />
         <Route path="/dashboard/manager" element={<Navigate to="/manager" replace />} />
         <Route path="/dashboard/worker" element={<Navigate to="/worker" replace />} />
