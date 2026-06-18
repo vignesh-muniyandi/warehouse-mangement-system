@@ -71,6 +71,10 @@ const legacyPermissionMap = {
   },
 };
 
+// Mount delivery routes
+const deliveryRoutes = require('./delivery');
+router.use('/delivery', deliveryRoutes);
+
 const legacyControlledPermissions = new Set(
   Object.values(legacyPermissionMap)
     .flatMap((actions) => Object.values(actions))
