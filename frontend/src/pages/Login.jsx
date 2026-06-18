@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { roleRouteMap, roleIdRouteMap } from '../hooks/usePermission';
 
 const Login = () => {
   const [form, setForm] = useState({ email: '', password: '' });
@@ -17,12 +18,12 @@ const Login = () => {
     e.preventDefault();
     setError('');
     if (!form.email || !form.password) {
-      return setError('Please enter email and password');
+      return setError('Please enter username and password');
     }
     try {
       setLoading(true);
-      await login(form.email, form.password);
-      navigate('/dashboard');
+      const user = await login(form.email, form.password);
+      navigate(roleIdRouteMap[user?.role_id] || roleRouteMap[user?.role_name] || '/admin');
     } catch (err) {
       setError(err.message || err.response?.data?.message || 'Login failed');
     } finally {
@@ -38,13 +39,13 @@ const Login = () => {
         {error && <div className="error-alert">{error}</div>}
         <form onSubmit={handleSubmit} className="form-group">
           <div>
-            <label className="label">Email</label>
+            <label className="label">Username / Email / User ID</label>
             <input
               name="email"
               value={form.email}
               onChange={handleChange}
-              placeholder="Enter your email"
-              type="email"
+              placeholder="manager, manager@wms.example.com, or 2"
+              type="text"
               className="auth-input"
             />
           </div>

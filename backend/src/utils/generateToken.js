@@ -7,11 +7,16 @@ const RESET_TOKEN_EXPIRY = process.env.RESET_TOKEN_EXPIRY || '15m';
 function generateAccessToken(user) {
   return jwt.sign(
     {
+      userId: user.user_id,
+      roleId: user.role_id,
+      roleName: user.role_name,
       user_id: user.user_id,
       role_id: user.role_id,
       role_name: user.role_name,
       first_name: user.first_name,
       last_name: user.last_name,
+      permissions: Array.isArray(user.permissions) ? user.permissions : [],
+      warehouse_id: user.warehouse_id || null,
     },
     process.env.JWT_SECRET,
     { expiresIn: ACCESS_TOKEN_EXPIRY }

@@ -8,6 +8,12 @@ const upload = multer({ dest: 'uploads/' });
 
 router.use(authorize(4));
 
+function emitDeliveryEvent(req, event, payload) {
+  const io = req.app.get('io');
+  if (!io || !req.user?.user_id) return;
+  io.to(`delivery:${req.user.user_id}`).emit(event, payload);
+}
+
 // Dashboard KPIs
 router.get('/dashboard', async (req, res) => {
   try {
@@ -16,12 +22,14 @@ router.get('/dashboard', async (req, res) => {
     const pending = await db.query("SELECT COUNT(*) FROM shipments WHERE assigned_user_id = $1 AND status = 'assigned'", [userId]);
     const outFor = await db.query("SELECT COUNT(*) FROM shipments WHERE assigned_user_id = $1 AND status = 'en_route'", [userId]);
     const delivered = await db.query("SELECT COUNT(*) FROM shipments WHERE assigned_user_id = $1 AND status = 'delivered'", [userId]);
-    return res.json({ success: true, data: {
+    const payload = {
       assigned_shipments: Number(assigned.rows[0].count || 0),
       pending_deliveries: Number(pending.rows[0].count || 0),
       out_for_delivery: Number(outFor.rows[0].count || 0),
-      delivered_today: Number(delivered.rows[0].count || 0)
-    }});
+      delivered_today: Number(delivered.rows[0].count || 0),
+    };
+    emitDeliveryEvent(req, 'delivery:kpis', payload);
+    return res.json({ success: true, data: payload });
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, message: 'Failed to fetch dashboard' });
@@ -36,6 +44,8 @@ router.get('/shipments', async (req, res) => {
       `SELECT shipment_id, order_id, customer_name, address, phone, package_count, payment_type, status
        FROM shipments WHERE assigned_user_id = $1 ORDER BY created_at DESC`, [userId]
     );
+    const payload = rows;
+    emitDeliveryEvent(req, 'delivery:shipments', payload);
     return res.json({ success: true, data: rows });
   } catch (err) {
     console.error(err);
@@ -62,6 +72,7 @@ router.post('/start-route', async (req, res) => {
     const userId = req.user.user_id;
     // mark route accepted - for demo we update shipments assigned to user to status 'accepted'
     await db.query("UPDATE shipments SET status = 'assigned', last_update = NOW() WHERE assigned_user_id = $1", [userId]);
+    emitDeliveryEvent(req, 'delivery:status', { action: 'route_accepted' });
     return res.json({ success: true, message: 'Route accepted' });
   } catch (err) {
     console.error(err);
@@ -75,6 +86,7 @@ router.post('/collect', async (req, res) => {
     const { shipment_id, collected_count } = req.body;
     if (!shipment_id) return res.status(400).json({ success: false, message: 'shipment_id required' });
     await db.query("UPDATE shipments SET status = 'collected', last_update = NOW() WHERE shipment_id = $1", [shipment_id]);
+    emitDeliveryEvent(req, 'delivery:status', { action: 'collected', shipment_id });
     return res.json({ success: true, message: 'Collected' });
   } catch (err) {
     console.error(err);
@@ -87,6 +99,7 @@ router.post('/dispatch', async (req, res) => {
     const { shipment_ids } = req.body;
     if (!Array.isArray(shipment_ids)) return res.status(400).json({ success: false, message: 'shipment_ids array required' });
     await db.query("UPDATE shipments SET status = 'dispatched', last_update = NOW() WHERE shipment_id = ANY($1::int[])", [shipment_ids]);
+    emitDeliveryEvent(req, 'delivery:status', { action: 'dispatched', shipment_ids });
     return res.json({ success: true, message: 'Dispatched' });
   } catch (err) {
     console.error(err);
@@ -99,6 +112,8 @@ router.post('/location', async (req, res) => {
     const { shipment_id, latitude, longitude } = req.body;
     await db.query('INSERT INTO delivery_tracking (shipment_id, user_id, latitude, longitude) VALUES ($1,$2,$3,$4)', [shipment_id, req.user.user_id, latitude, longitude]);
     await db.query("UPDATE shipments SET status = 'en_route', last_update = NOW() WHERE shipment_id = $1", [shipment_id]);
+    const latestTracking = { shipment_id, latitude, longitude, recorded_at: new Date().toISOString() };
+    emitDeliveryEvent(req, 'delivery:location', latestTracking);
     return res.json({ success: true });
   } catch (err) {
     console.error(err);
@@ -123,6 +138,7 @@ router.post('/delivered', async (req, res) => {
   try {
     const { shipment_id } = req.body;
     await db.query("UPDATE shipments SET status = 'delivered', last_update = NOW() WHERE shipment_id = $1", [shipment_id]);
+    emitDeliveryEvent(req, 'delivery:status', { action: 'delivered', shipment_id });
     return res.json({ success: true, message: 'Delivery recorded' });
   } catch (err) {
     console.error(err);
@@ -135,10 +151,25 @@ router.post('/failed', async (req, res) => {
     const { shipment_id, reason, notes } = req.body;
     await db.query("UPDATE shipments SET status = 'failed', last_update = NOW() WHERE shipment_id = $1", [shipment_id]);
     await db.query('INSERT INTO failed_deliveries (shipment_id, reason, notes) VALUES ($1,$2,$3)', [shipment_id, reason, notes]);
+    emitDeliveryEvent(req, 'delivery:status', { action: 'failed', shipment_id, reason });
     return res.json({ success: true, message: 'Failure recorded' });
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, message: 'Failed to record failure' });
+  }
+});
+
+router.get('/tracking/:shipment_id', async (req, res) => {
+  try {
+    const { shipment_id } = req.params;
+    const result = await db.query(
+      'SELECT latitude, longitude, recorded_at FROM delivery_tracking WHERE shipment_id = $1 ORDER BY recorded_at ASC',
+      [shipment_id]
+    );
+    return res.json({ success: true, data: result.rows });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Failed to fetch shipment tracking data' });
   }
 });
 

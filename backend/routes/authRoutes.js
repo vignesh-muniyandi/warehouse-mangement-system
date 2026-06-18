@@ -9,3 +9,4 @@ router.post('/login', authController.login);
 router.get('/profile', protect, authController.profile);
 
 module.exports = router;
+    

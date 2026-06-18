@@ -71,7 +71,7 @@ router.post('/login', async (req, res) => {
       if (failCount >= MAX_FAILED_ATTEMPTS) {
         return res.status(403).json({ success: false, message: 'Account locked, contact admin' });
       }
-      rcontroller testeturn res.status(401).json({ success: false, message: 'Invalid email or password' });
+      return res.status(401).json({ success: false, message: 'Invalid email or password' });
     }
 
     const locked = await getFailedLoginCount(user.user_id, req.ip);

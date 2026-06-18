@@ -1,8 +1,11 @@
 const express = require('express');
 const authController = require('../controllers/authController');
-const { verifyToken, requireRole } = require('../middleware/authMiddleware');
+const { verifyToken, authorize, validateOrigin } = require('../middleware/authMiddleware');
 
 const router = express.Router();
+
+// Apply CSRF protection to all routes
+router.use(validateOrigin);
 
 router.post('/login', authController.login);
 router.post('/logout', verifyToken, authController.logout);

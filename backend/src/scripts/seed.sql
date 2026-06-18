@@ -1,32 +1,82 @@
 INSERT INTO roles (role_id, role_name, permissions) VALUES
-  (1, 'Admin', '{"dashboard":"read,write","users":"read,write,delete","products":"read,write,delete","inventory":"read,write","purchase":"read,write","orders":"read,write","reports":"read","settings":"write"}'),
-  (2, 'Warehouse Manager', '{"dashboard":"read","users":"read","products":"read","inventory":"read,write","purchase":"read,write","orders":"read","reports":"read","settings":"read"}'),
-  (3, 'Worker/Operator', '{"dashboard":"read","inventory":"read,write","orders":"read","reports":"read"}'),
-  (4, 'Delivery Team', '{"dashboard":"read","orders":"read,write","reports":"read"}')
-ON CONFLICT (role_id) DO NOTHING;
+  (1, 'Admin', '["users:create","users:read","users:update","users:delete","products:create","products:read","products:update","products:delete","inventory:create","inventory:read","inventory:update","inventory:delete","purchase_orders:create","purchase_orders:read","purchase_orders:approve","orders:create","orders:read","orders:update","orders:assign","settings:read","settings:update","reports:read","reports:export","roles:manage"]'),
+  (2, 'Warehouse Manager', '["inventory:read","inventory:request_adjust","orders:read","orders:update","orders:assign","orders:track","tasks:create","tasks:read","tasks:update","purchase_orders:read","purchase_orders:receive","reports:read_limited","reports:export","settings:read"]'),
+  (3, 'Worker/Operator', '["tasks:read_own","tasks:update_own","inventory:scan","pick:read_own","pick:update_own","pack:update_own","reports:read_limited","reports:export"]'),
+  (4, 'Delivery Team', '["shipments:read_own","shipments:update_status","reports:read_limited","reports:export"]')
+ON CONFLICT (role_id) DO UPDATE SET permissions = EXCLUDED.permissions;
 
 INSERT INTO permissions (code, description, category) VALUES
-  ('users.view', 'View users', 'Users'),
-  ('users.manage', 'Create, update or delete users', 'Users'),
-  ('products.view', 'View products', 'Products'),
-  ('products.manage', 'Create or update products', 'Products'),
-  ('inventory.view', 'View inventory dashboard', 'Inventory'),
-  ('inventory.manage', 'Manage stock quantities', 'Inventory'),
-  ('orders.view', 'View orders', 'Orders'),
-  ('orders.manage', 'Create and process orders', 'Orders'),
-  ('purchase.view', 'View purchase orders', 'Purchase'),
-  ('purchase.manage', 'Create purchase orders', 'Purchase')
+  ('users:create', 'Create users', 'Users'),
+  ('users:read', 'View users', 'Users'),
+  ('users:update', 'Update users', 'Users'),
+  ('users:delete', 'Delete users', 'Users'),
+  ('products:create', 'Create products', 'Products'),
+  ('products:read', 'View products', 'Products'),
+  ('products:update', 'Update products', 'Products'),
+  ('products:delete', 'Delete products', 'Products'),
+  ('inventory:create', 'Create inventory', 'Inventory'),
+  ('inventory:read', 'View inventory dashboard', 'Inventory'),
+  ('inventory:update', 'Manage stock quantities', 'Inventory'),
+  ('inventory:delete', 'Delete inventory', 'Inventory'),
+  ('inventory:request_adjust', 'Request stock adjustments', 'Inventory'),
+  ('inventory:scan', 'Scan inventory barcodes', 'Inventory'),
+  ('purchase_orders:create', 'Create purchase orders', 'Purchase'),
+  ('purchase_orders:read', 'View purchase orders', 'Purchase'),
+  ('purchase_orders:approve', 'Approve purchase orders', 'Purchase'),
+  ('orders:create', 'Create orders', 'Orders'),
+  ('orders:read', 'View orders', 'Orders'),
+  ('orders:update', 'Update orders', 'Orders'),
+  ('orders:assign', 'Assign orders', 'Orders'),
+  ('orders:track', 'Track orders', 'Orders'),
+  ('tasks:create', 'Create warehouse tasks', 'Tasks'),
+  ('tasks:read', 'View all warehouse tasks', 'Tasks'),
+  ('tasks:update', 'Update warehouse tasks', 'Tasks'),
+  ('tasks:read_own', 'View assigned tasks', 'Tasks'),
+  ('tasks:update_own', 'Update assigned tasks', 'Tasks'),
+  ('pick:read_own', 'View assigned pick list', 'Tasks'),
+  ('pick:update_own', 'Update assigned pick tasks', 'Tasks'),
+  ('pack:update_own', 'Update assigned pack tasks', 'Tasks'),
+  ('shipments:read_own', 'View assigned shipments', 'Delivery'),
+  ('shipments:update_status', 'Update assigned shipments', 'Delivery'),
+  ('settings:read', 'View settings', 'Settings'),
+  ('settings:update', 'Update settings', 'Settings'),
+  ('reports:read', 'View all reports', 'Reports'),
+  ('reports:read_limited', 'View warehouse reports', 'Reports'),
+  ('reports:export', 'Export reports', 'Reports'),
+  ('roles:manage', 'Manage roles and permissions', 'Security')
 ON CONFLICT (code) DO NOTHING;
+
+INSERT INTO role_permissions (role_id, permission_id)
+SELECT r.role_id, p.permission_id
+FROM roles r
+JOIN LATERAL jsonb_array_elements_text(r.permissions) rp(code) ON true
+JOIN permissions p ON p.code = rp.code
+ON CONFLICT (role_id, permission_id) DO NOTHING;
 
 INSERT INTO users (role_id, first_name, last_name, email, password_hash, phone, status)
 VALUES
   (1, 'Admin', 'User', 'admin@wms.example.com', '$2b$12$mFiSSsZdPL0tEBcOHjPkMeekgq2h19t28I.z.RQlAR/mDAnnEGrgq', '555-0100', 'Active')
 ON CONFLICT (email) DO NOTHING;
 
+INSERT INTO users (role_id, first_name, last_name, email, password_hash, phone, status)
+VALUES
+  (2, 'Manager', 'User', 'manager@wms.example.com', '$2b$12$/HTRAVF1LO.GXrnXmazWP.nSVkYuRt5LJnIxhB8vQtbdKfroAu8Wu', '555-0101', 'Active'),
+  (3, 'Worker', 'User', 'worker@wms.example.com', '$2b$12$/HTRAVF1LO.GXrnXmazWP.nSVkYuRt5LJnIxhB8vQtbdKfroAu8Wu', '555-0102', 'Active'),
+  (4, 'Delivery', 'User', 'delivery@wms.example.com', '$2b$12$/HTRAVF1LO.GXrnXmazWP.nSVkYuRt5LJnIxhB8vQtbdKfroAu8Wu', '555-0103', 'Active')
+ON CONFLICT (email) DO NOTHING;
+
 INSERT INTO warehouses (warehouse_code, name, location, capacity)
 VALUES
   ('WH-001', 'Central Warehouse', '123 Main St, Cityville', 5000)
 ON CONFLICT (warehouse_code) DO NOTHING;
+
+UPDATE users
+SET warehouse_id = (SELECT warehouse_id FROM warehouses WHERE warehouse_code = 'WH-001')
+WHERE warehouse_id IS NULL;
+
+INSERT INTO user_roles (user_id, role_id, is_primary)
+SELECT user_id, role_id, TRUE FROM users
+ON CONFLICT (user_id, role_id) DO NOTHING;
 
 INSERT INTO categories (name, description)
 VALUES
@@ -77,4 +127,44 @@ INSERT INTO system_notifications (user_id, title, message)
 SELECT u.user_id, 'Welcome to WMS', 'Your Warehouse Management System account is ready. Explore dashboard summaries and manage inventory.'
 FROM users u
 WHERE u.email = 'admin@wms.example.com'
+ON CONFLICT DO NOTHING;
+
+INSERT INTO orders (customer_name, warehouse_id, assigned_user_id, assigned_delivery_user_id, status, total_amount, delivery_address, cod_amount, route_sequence, gps_lat, gps_lng)
+SELECT 'Aarav Retail', w.warehouse_id, worker.user_id, delivery.user_id, 'Pending', 239.98, '18 Market Road, Cityville', 0, 1, 12.971600, 77.594600
+FROM warehouses w
+JOIN users worker ON worker.email = 'worker@wms.example.com'
+JOIN users delivery ON delivery.email = 'delivery@wms.example.com'
+WHERE w.warehouse_code = 'WH-001'
+ON CONFLICT DO NOTHING;
+
+INSERT INTO orders (customer_name, warehouse_id, assigned_user_id, assigned_delivery_user_id, status, total_amount, delivery_address, cod_amount, route_sequence, gps_lat, gps_lng)
+SELECT 'Nimbus Stores', w.warehouse_id, worker.user_id, delivery.user_id, 'Out for Delivery', 148.50, '42 Lake View Street, Cityville', 148.50, 2, 12.976400, 77.603300
+FROM warehouses w
+JOIN users worker ON worker.email = 'worker@wms.example.com'
+JOIN users delivery ON delivery.email = 'delivery@wms.example.com'
+WHERE w.warehouse_code = 'WH-001'
+ON CONFLICT DO NOTHING;
+
+INSERT INTO tasks (warehouse_id, assigned_user_id, created_by_user_id, title, task_type, status, priority, notes, target_quantity, location_code)
+SELECT w.warehouse_id, worker.user_id, manager.user_id, 'Receive PO #1001 and validate cartons', 'receive', 'In Progress', 'High', 'Check supplier ASN before putaway.', 12, 'DOCK-01'
+FROM warehouses w
+JOIN users worker ON worker.email = 'worker@wms.example.com'
+JOIN users manager ON manager.email = 'manager@wms.example.com'
+WHERE w.warehouse_code = 'WH-001'
+ON CONFLICT DO NOTHING;
+
+INSERT INTO tasks (warehouse_id, assigned_user_id, created_by_user_id, title, task_type, status, priority, notes, target_quantity, location_code)
+SELECT w.warehouse_id, worker.user_id, manager.user_id, 'Pick scanners for Aarav Retail', 'pick', 'Pending', 'High', 'Scan item and confirm BIN-A1 before pick.', 2, 'BIN-A1'
+FROM warehouses w
+JOIN users worker ON worker.email = 'worker@wms.example.com'
+JOIN users manager ON manager.email = 'manager@wms.example.com'
+WHERE w.warehouse_code = 'WH-001'
+ON CONFLICT DO NOTHING;
+
+INSERT INTO tasks (warehouse_id, assigned_user_id, created_by_user_id, title, task_type, status, priority, notes, target_quantity, location_code)
+SELECT w.warehouse_id, worker.user_id, manager.user_id, 'Pack Nimbus COD order', 'pack', 'Pending', 'Normal', 'Verify COD label before sealing.', 3, 'PACK-02'
+FROM warehouses w
+JOIN users worker ON worker.email = 'worker@wms.example.com'
+JOIN users manager ON manager.email = 'manager@wms.example.com'
+WHERE w.warehouse_code = 'WH-001'
 ON CONFLICT DO NOTHING;

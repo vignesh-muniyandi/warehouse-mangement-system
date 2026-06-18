@@ -15,7 +15,7 @@ module.exports = (sequelize) => {
     permissions: {
       type: DataTypes.JSONB,
       allowNull: false,
-      defaultValue: {},
+      defaultValue: [],
     },
     created_at: {
       type: DataTypes.DATE,

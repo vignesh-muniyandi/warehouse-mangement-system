@@ -17,8 +17,22 @@ const MAX_FAILED_ATTEMPTS = Number(process.env.MAX_FAILED_LOGIN_ATTEMPTS) || 5;
 const LOCK_WINDOW_SECONDS = Number(process.env.LOCK_WINDOW_MINUTES || 10) * 60;
 const REFRESH_TOKEN_TTL_SECONDS = Number(process.env.REFRESH_TOKEN_TTL_SECONDS) || 7 * 24 * 60 * 60;
 
-function normalizeEmail(email) {
-  return typeof email === 'string' ? email.trim().toLowerCase() : '';
+const loginAliasMap = {
+  admin: 'admin@wms.example.com',
+  manager: 'manager@wms.example.com',
+  warehousemanager: 'manager@wms.example.com',
+  'warehouse-manager': 'manager@wms.example.com',
+  worker: 'worker@wms.example.com',
+  operator: 'worker@wms.example.com',
+  delivery: 'delivery@wms.example.com',
+  deliveryteam: 'delivery@wms.example.com',
+  'delivery-team': 'delivery@wms.example.com',
+};
+
+function normalizeLoginIdentifier(identifier) {
+  const value = typeof identifier === 'string' ? identifier.trim().toLowerCase() : '';
+  const compact = value.replace(/[\s_/]+/g, '');
+  return loginAliasMap[value] || loginAliasMap[compact] || value;
 }
 
 async function getFailedLoginCount(userId, ip) {
@@ -45,6 +59,7 @@ function sanitizeUser(user) {
   if (!user) return null;
   const plain = user.get ? user.get({ plain: true }) : { ...user };
   const roleName = plain.role?.role_name || plain.role_name || null;
+  const permissions = plain.role?.permissions || plain.permissions || [];
   return {
     user_id: plain.user_id,
     first_name: plain.first_name,
@@ -54,6 +69,8 @@ function sanitizeUser(user) {
     status: plain.status,
     role_name: roleName,
     role_id: plain.role_id,
+    permissions: Array.isArray(permissions) ? permissions : [],
+    warehouse_id: plain.warehouse_id || null,
     last_login: plain.last_login || null,
   };
 }
@@ -61,13 +78,16 @@ function sanitizeUser(user) {
 async function findUserWithRole(filter) {
   return User.findOne({
     where: filter,
-    include: [{ model: Role, as: 'role', attributes: ['role_name'] }],
+    include: [{ model: Role, as: 'role', attributes: ['role_name', 'permissions'] }],
   });
 }
 
-exports.loginUser = async (email, password, ip) => {
-  const normalizedEmail = normalizeEmail(email);
-  const user = await findUserWithRole({ email: normalizedEmail });
+exports.loginUser = async (identifier, password, ip) => {
+  const normalizedIdentifier = normalizeLoginIdentifier(identifier);
+  const filter = /^\d+$/.test(normalizedIdentifier)
+    ? { user_id: Number(normalizedIdentifier) }
+    : { email: normalizedIdentifier };
+  const user = await findUserWithRole(filter);
 
   if (!user) {
     await recordFailedLogin(null, ip);
@@ -105,6 +125,8 @@ exports.loginUser = async (email, password, ip) => {
     role_name: user.role?.role_name,
     first_name: user.first_name,
     last_name: user.last_name,
+    permissions: Array.isArray(user.role?.permissions) ? user.role.permissions : [],
+    warehouse_id: user.warehouse_id || null,
   };
 
   const accessToken = generateAccessToken(payload);
@@ -149,6 +171,8 @@ exports.refreshAccessToken = async (refreshToken) => {
     role_name: user.role?.role_name,
     first_name: user.first_name,
     last_name: user.last_name,
+    permissions: Array.isArray(user.role?.permissions) ? user.role.permissions : [],
+    warehouse_id: user.warehouse_id || null,
   };
 
   return { accessToken: generateAccessToken(payload) };
@@ -160,7 +184,7 @@ exports.getUserProfile = async (userId) => {
 };
 
 exports.generateResetToken = async (email) => {
-  const normalizedEmail = normalizeEmail(email);
+  const normalizedEmail = normalizeLoginIdentifier(email);
   const user = await findUserWithRole({ email: normalizedEmail });
   if (!user) {
     return;
@@ -184,7 +208,7 @@ exports.resetPassword = async (token, newPassword) => {
 };
 
 exports.createUser = async (payload) => {
-  const email = normalizeEmail(payload.email);
+  const email = normalizeLoginIdentifier(payload.email);
   const existing = await User.findOne({ where: { email } });
   if (existing) {
     throw new AppError('Email already registered', 409);

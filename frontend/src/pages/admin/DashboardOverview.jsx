@@ -125,42 +125,42 @@ export default function DashboardOverview() {
     {
       title: 'Users Management',
       description: 'Add, edit, delete users and manage user access details.',
-      path: '/dashboard/admin/users',
+      path: '/admin/users',
       icon: <PeopleIcon sx={{ fontSize: 36, color: '#3b82f6' }} />,
       borderColor: '#3b82f6'
     },
     {
       title: 'Products Management',
       description: 'Manage SKU, product details, categories, and unit pricing.',
-      path: '/dashboard/admin/products',
+      path: '/admin/products',
       icon: <ShoppingBagIcon sx={{ fontSize: 36, color: '#8b5cf6' }} />,
       borderColor: '#8b5cf6'
     },
     {
       title: 'Inventory Management',
       description: 'Monitor stock levels, adjust quantity, and process transfers.',
-      path: '/dashboard/admin/inventory',
+      path: '/admin/inventory',
       icon: <WarehouseIcon sx={{ fontSize: 36, color: '#10b981' }} />,
       borderColor: '#10b981'
     },
     {
       title: 'Purchase Orders',
       description: 'Create POs, request supplier approval, and receive warehouse goods.',
-      path: '/dashboard/admin/purchase-orders',
+      path: '/admin/purchase-orders',
       icon: <LocalShippingIcon sx={{ fontSize: 36, color: '#f59e0b' }} />,
       borderColor: '#f59e0b'
     },
     {
       title: 'Orders Management',
       description: 'Track sales orders, update statuses, and assign operators.',
-      path: '/dashboard/admin/orders',
+      path: '/admin/orders',
       icon: <ShoppingCartIcon sx={{ fontSize: 36, color: '#ec4899' }} />,
       borderColor: '#ec4899'
     },
     {
       title: 'System Settings',
       description: 'Configure warehouse properties, permissions, and security parameters.',
-      path: '/dashboard/admin/settings',
+      path: '/admin/settings',
       icon: <SettingsIcon sx={{ fontSize: 36, color: '#64748b' }} />,
       borderColor: '#64748b'
     }

@@ -25,13 +25,12 @@ const PAGE_TITLES = {
   settings: 'System Settings',
 };
 
-export default function Topbar() {
+export default function Topbar({ title }) {
   const { user, logout } = useAuth();
   const location = useLocation();
 
-  // Extract last path segment for title
   const segment = location.pathname.split('/').filter(Boolean).pop();
-  const pageTitle = PAGE_TITLES[segment] || 'Warehouse Management System';
+  const pageTitle = title || PAGE_TITLES[segment] || 'Warehouse Management System';
 
   // Generate avatar initials
   const initials = user

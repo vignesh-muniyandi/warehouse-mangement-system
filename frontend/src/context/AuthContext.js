@@ -4,6 +4,15 @@ import { useNavigate } from 'react-router-dom';
 
 const AuthContext = createContext(null);
 
+function decodeJwtPayload(token) {
+  try {
+    const payload = token.split('.')[1];
+    return JSON.parse(atob(payload.replace(/-/g, '+').replace(/_/g, '/')));
+  } catch {
+    return null;
+  }
+}
+
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(() => {
     try {
@@ -26,7 +35,9 @@ export function AuthProvider({ children }) {
         try {
           const response = await api.get('/auth/me');
           if (response.data.success) {
-            setUser(response.data.data?.user || null);
+            const userValue = response.data.data?.user || null;
+            setUser(userValue);
+            localStorage.setItem('user', JSON.stringify(userValue));
             setIsAuthenticated(true);
           } else {
             setUser(null);
@@ -51,7 +62,8 @@ export function AuthProvider({ children }) {
       const response = await api.post('/auth/login', { email, password });
       if (response.data.success) {
         const tokenValue = response.data.data?.token;
-        const userValue = response.data.data?.user;
+        const tokenPayload = decodeJwtPayload(tokenValue) || {};
+        const userValue = { ...response.data.data?.user, permissions: tokenPayload.permissions || response.data.data?.user?.permissions || [] };
         setToken(tokenValue);
         setAuthToken(tokenValue);
         setUser(userValue);
