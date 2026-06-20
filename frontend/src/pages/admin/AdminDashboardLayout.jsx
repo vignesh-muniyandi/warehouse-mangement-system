@@ -4,7 +4,7 @@ import Box from '@mui/material/Box';
 import Sidebar from '../../components/Sidebar';
 import Topbar from '../../components/Topbar';
 import DashboardOverview from './DashboardOverview';
-import UsersManagement from './UsersManagement';
+import AdminUsers from './AdminUsers';
 import ProductsManagement from './ProductsManagement';
 import InventoryManagement from './InventoryManagement';
 import PurchaseManagement from './PurchaseManagement';
@@ -22,7 +22,7 @@ export default function AdminDashboardLayout() {
         <Box component="main" sx={{ flex: 1, p: 3, backgroundColor: '#f8fafc' }}>
           <Routes>
             <Route path="" element={<DashboardOverview />} />
-            <Route path="users" element={<UsersManagement />} />
+            <Route path="users" element={<AdminUsers />} />
             <Route path="products" element={<ProductsManagement />} />
             <Route path="inventory" element={<InventoryManagement />} />
             <Route path="purchase-orders" element={<PurchaseManagement />} />

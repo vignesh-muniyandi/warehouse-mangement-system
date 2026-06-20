@@ -85,6 +85,7 @@ const loginLimiter = rateLimit({
 });
 
 const apiRoutes = require('./routes/api');
+const adminRoutes = require('./routes/adminRoutes');
 const debugRoutes = require('./routes/debug');
 
 app.use('/auth/login', loginLimiter);
@@ -110,6 +111,7 @@ if (fs.existsSync(frontendBuildPath)) {
 
 // Mount debug routes (dev-only) before the secured /api router
 app.use('/api/debug', debugRoutes);
+app.use('/api/admin', adminRoutes);
 app.use('/api', apiRoutes);
 
 app.get('/health', (req, res) => res.json({ success: true, uptime: process.uptime() }));
