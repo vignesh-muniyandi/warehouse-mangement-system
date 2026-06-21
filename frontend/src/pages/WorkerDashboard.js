@@ -90,7 +90,13 @@ export default function WorkerDashboard() {
   }, []);
 
   const updateTask = async (taskId, status, extra = {}) => {
-    await api.put(`/tasks/${taskId}`, { status, ...extra });
+    if (status === 'In Progress') {
+      await api.patch(`/worker/tasks/${taskId}/start`, extra);
+    } else if (status === 'Completed') {
+      await api.patch(`/worker/tasks/${taskId}/complete`, extra);
+    } else {
+      await api.put(`/tasks/${taskId}`, { status, ...extra });
+    }
     setMessage(`Task moved to ${status}.`);
     loadData();
   };

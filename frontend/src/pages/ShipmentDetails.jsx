@@ -23,7 +23,7 @@ export default function ShipmentDetails() {
     <Box sx={{ display: 'flex', minHeight: '100vh' }}>
       <Sidebar />
       <Box sx={{ flex: 1, p: 3 }}>
-        <Typography variant="h5">Shipment {shipment.shipment_id}</Typography>
+        <Typography variant="h5">Order {shipment.order_id || shipment.shipment_id}</Typography>
         <Paper sx={{ p: 2, mt: 2 }}>
           <Typography variant="subtitle1">Customer</Typography>
           <Typography>{shipment.customer_name} — {shipment.phone}</Typography>
@@ -39,11 +39,11 @@ export default function ShipmentDetails() {
 
         <Stack direction="row" spacing={1} sx={{ mt: 2 }}>
           <Button variant="contained" onClick={async () => {
-            await api.post('/delivery/collect', { shipment_id: shipment.shipment_id });
+            await api.post('/delivery/collect', { order_id: shipment.order_id || shipment.shipment_id });
             window.location.reload();
           }}>Collect</Button>
           <Button variant="outlined" onClick={async () => {
-            await api.post('/delivery/dispatch', { shipment_ids: [shipment.shipment_id] });
+            await api.post('/delivery/dispatch', { order_ids: [shipment.order_id || shipment.shipment_id] });
             window.location.reload();
           }}>Dispatch</Button>
         </Stack>

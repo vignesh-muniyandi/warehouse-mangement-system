@@ -9,6 +9,7 @@ const {
   requirePermission,
   authorize,
 } = require('../middleware/permissionMiddleware');
+const emailService = require('../services/emailService');
 
 const router = express.Router();
 
@@ -133,6 +134,40 @@ function legacyPermissionsToExact(permissions, existingPermissions = []) {
   });
 
   return [...new Set([...preserved, ...selected])];
+}
+
+async function emitToUser(req, userId, event, payload) {
+  const io = req.app.get('io');
+  if (!io || !userId) return;
+  io.to(`user:${userId}`).emit(event, payload);
+}
+
+async function createNotification(req, userId, title, message) {
+  const { rows } = await db.query(
+    `INSERT INTO system_notifications (user_id, title, message, read_status) VALUES ($1, $2, $3, false) RETURNING *`,
+    [userId, title, message]
+  );
+
+  const notification = rows[0];
+  await emitToUser(req, userId, 'notification', notification);
+  return notification;
+}
+
+async function notifyWarehouseManagers(req, warehouseId, title, message) {
+  if (!warehouseId) return [];
+  const { rows } = await db.query(
+    `SELECT u.user_id FROM users u JOIN roles r ON u.role_id = r.role_id WHERE r.role_name = 'Warehouse Manager' AND u.warehouse_id = $1`,
+    [warehouseId]
+  );
+  const managers = rows.map((row) => row.user_id);
+  const notifications = [];
+
+  for (const managerId of managers) {
+    const notification = await createNotification(req, managerId, title, message);
+    notifications.push(notification);
+  }
+
+  return notifications;
 }
 
 // ==========================================
@@ -1371,6 +1406,25 @@ router.post('/tasks', requirePermission('tasks:create'), async (req, res) => {
        RETURNING *`,
       [warehouseId, assigned_user_id, req.user.user_id, title, task_type, priority, notes]
     );
+    // send task assignment email asynchronously
+    try {
+      if (assigned_user_id) {
+        const userRes = await db.query('SELECT first_name, last_name, email FROM users WHERE user_id = $1', [assigned_user_id]);
+        const worker = userRes.rows[0];
+        if (worker && worker.email) {
+          const task = rows[0];
+          emailService.sendTaskAssignmentEmail({ first_name: worker.first_name, last_name: worker.last_name, email: worker.email }, {
+            task_name: task.title,
+            description: task.notes,
+            priority: task.priority,
+            status: task.status,
+            due_date: task.due_date,
+          }).catch((e) => console.error('[API] task assignment email failed', e));
+        }
+      }
+    } catch (e) {
+      console.error('[API] failed to send task assignment email', e);
+    }
     return res.json({ success: true, data: rows[0], message: 'Task created successfully' });
   } catch (err) {
     console.error(err);
@@ -1416,6 +1470,94 @@ router.put('/tasks/:id(\\d+)', requireAnyPermission('tasks:update', 'tasks:updat
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, message: 'Failed to update task' });
+  }
+});
+
+router.patch('/worker/tasks/:id(\\d+)/start', authorize(3), requirePermission('tasks:update_own'), async (req, res) => {
+  try {
+    const taskId = Number(req.params.id);
+    const { rows } = await db.query(
+      'SELECT task_id, title, warehouse_id, assigned_user_id FROM tasks WHERE task_id = $1 AND assigned_user_id = $2',
+      [taskId, req.user.user_id]
+    );
+    if (!rows.length) {
+      return res.status(404).json({ success: false, message: 'Task not found or not assigned to you' });
+    }
+
+    const task = rows[0];
+    await db.query('UPDATE tasks SET status = $1, updated_at = NOW() WHERE task_id = $2', ['In Progress', taskId]);
+
+    await notifyWarehouseManagers(
+      req,
+      task.warehouse_id,
+      `Task started by ${req.user.first_name}`,
+      `${req.user.first_name} started task "${task.title}" (ID: ${task.task_id}).`
+    );
+
+    return res.json({ success: true, message: 'Task started successfully' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Failed to start task' });
+  }
+});
+
+router.patch('/worker/tasks/:id(\\d+)/complete', authorize(3), requirePermission('tasks:update_own'), async (req, res) => {
+  try {
+    const taskId = Number(req.params.id);
+    const { rows } = await db.query(
+      'SELECT task_id, title, warehouse_id, assigned_user_id FROM tasks WHERE task_id = $1 AND assigned_user_id = $2',
+      [taskId, req.user.user_id]
+    );
+    if (!rows.length) {
+      return res.status(404).json({ success: false, message: 'Task not found or not assigned to you' });
+    }
+
+    const task = rows[0];
+    await db.query('UPDATE tasks SET status = $1, updated_at = NOW() WHERE task_id = $2', ['Completed', taskId]);
+
+    await notifyWarehouseManagers(
+      req,
+      task.warehouse_id,
+      `Task completed by ${req.user.first_name}`,
+      `${req.user.first_name} completed task "${task.title}" (ID: ${task.task_id}).`
+    );
+
+    return res.json({ success: true, message: 'Task completed successfully' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Failed to complete task' });
+  }
+});
+
+router.get('/manager/notifications', authorize(2), requireAnyPermission('tasks:read', 'reports:read', 'reports:read_limited'), async (req, res) => {
+  try {
+    const { rows } = await db.query(
+      `SELECT * FROM system_notifications WHERE user_id = $1 OR user_id IS NULL ORDER BY created_at DESC LIMIT 20`,
+      [req.user.user_id]
+    );
+    return res.json({ success: true, data: rows });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Failed to fetch notifications' });
+  }
+});
+
+router.patch('/notifications/:id(\\d+)/read', authorize(2), requireAnyPermission('tasks:read', 'reports:read', 'reports:read_limited'), async (req, res) => {
+  try {
+    const notificationId = Number(req.params.id);
+    const { rows } = await db.query('SELECT notification_id, user_id FROM system_notifications WHERE notification_id = $1', [notificationId]);
+    if (!rows.length) {
+      return res.status(404).json({ success: false, message: 'Notification not found' });
+    }
+    const notification = rows[0];
+    if (notification.user_id !== req.user.user_id) {
+      return res.status(403).json({ success: false, message: 'Forbidden to update this notification' });
+    }
+    await db.query('UPDATE system_notifications SET read_status = true WHERE notification_id = $1', [notificationId]);
+    return res.json({ success: true, message: 'Notification marked as read' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: 'Failed to update notification status' });
   }
 });
 

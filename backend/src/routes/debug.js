@@ -13,7 +13,7 @@ function debugAllowed() {
 router.post('/reset-demo-passwords', async (req, res) => {
   if (!debugAllowed()) return res.status(403).json({ success: false, message: 'Not allowed' });
   try {
-    const password = req.body.password || 'Password123';
+    const password = req.body.password || 'Demo@123';
     const hash = await bcrypt.hash(password, 12);
     // update manager, worker, delivery
     await db.query("UPDATE users SET password_hash = $1 WHERE email IN ('manager@wms.example.com','worker@wms.example.com','delivery@wms.example.com')", [hash]);

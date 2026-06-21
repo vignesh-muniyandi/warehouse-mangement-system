@@ -26,6 +26,7 @@ import InputIcon from '@mui/icons-material/Input';
 import OutputIcon from '@mui/icons-material/Output';
 
 import { useAuth } from '../context/AuthContext';
+import usePermission from '../hooks/usePermission';
 
 const itemsByRole = {
   Admin: [
@@ -88,10 +89,30 @@ function ManagerNavItem({ item, activeModule, onSelect }) {
 
 export default function Sidebar({ activeModule, onModuleChange }) {
   const { user, logout } = useAuth();
+  const { hasPermission } = usePermission();
   const [searchParams, setSearchParams] = useSearchParams();
   const items = itemsByRole[user?.role_name] || itemsByRole.Admin;
   const isManager = user?.role_name === 'Warehouse Manager';
   const currentModule = activeModule || searchParams.get('module') || 'dashboard';
+
+  const managerModulePermissions = {
+    dashboard: null,
+    inventory: 'inventory:read',
+    orders: 'orders:read',
+    tasks: 'tasks:read',
+    inbound: 'purchase_orders:read',
+    outbound: 'orders:read',
+    reports: 'reports:read_limited',
+    settings: 'settings:read',
+  };
+
+  const visibleItems = isManager
+    ? items.filter((item) => {
+        if (!item.module) return true;
+        const permission = managerModulePermissions[item.module];
+        return permission === null || hasPermission(permission);
+      })
+    : items;
 
   const handleModuleSelect = (module) => {
     if (onModuleChange) {
@@ -131,7 +152,7 @@ export default function Sidebar({ activeModule, onModuleChange }) {
 
       <List sx={{ px: 1.5, flex: 1, pt: 1 }}>
         {isManager
-          ? items.map((item) => (
+            ? visibleItems.map((item) => (
               <ManagerNavItem
                 key={item.module}
                 item={item}

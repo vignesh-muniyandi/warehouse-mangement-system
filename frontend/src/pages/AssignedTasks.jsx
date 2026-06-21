@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Box, Paper, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Button, Typography } from '@mui/material';
+import { Box, Paper, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Button, Typography, Alert } from '@mui/material';
 import Sidebar from '../components/Sidebar';
 import api from '../api/axios';
 
@@ -7,6 +7,7 @@ export default function AssignedTasks() {
   const [tasks, setTasks] = useState([]);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
 
   useEffect(() => {
     const load = async () => {
@@ -15,7 +16,7 @@ export default function AssignedTasks() {
         setTasks(res.data.data || []);
       } catch (err) {
         console.error(err);
-        setMessage(err.response?.data?.message || 'Failed to load tasks');
+        setError(err.response?.data?.message || 'Failed to load tasks');
       } finally {
         setLoading(false);
       }
@@ -24,8 +25,25 @@ export default function AssignedTasks() {
   }, []);
 
   const startTask = async (id) => {
-    await api.put(`/tasks/${id}`, { status: 'In Progress' });
-    setTasks((t) => t.map((x) => (x.task_id === id ? { ...x, status: 'In Progress' } : x)));
+    try {
+      await api.patch(`/worker/tasks/${id}/start`);
+      setTasks((t) => t.map((x) => (x.task_id === id ? { ...x, status: 'In Progress' } : x)));
+      setMessage('Task started successfully');
+      setError('');
+    } catch (err) {
+      setError(err.response?.data?.message || 'Failed to start task');
+    }
+  };
+
+  const completeTask = async (id) => {
+    try {
+      await api.patch(`/worker/tasks/${id}/complete`);
+      setTasks((t) => t.map((x) => (x.task_id === id ? { ...x, status: 'Completed' } : x)));
+      setMessage('Task completed successfully');
+      setError('');
+    } catch (err) {
+      setError(err.response?.data?.message || 'Failed to complete task');
+    }
   };
 
   return (
@@ -33,6 +51,8 @@ export default function AssignedTasks() {
       <Sidebar />
       <Box sx={{ flex: 1, p: 3 }}>
         <Typography variant="h5" sx={{ mb: 2, color: '#9a3412', fontWeight: 800 }}>My Assigned Tasks</Typography>
+        {message && <Alert severity="success" sx={{ mb: 2 }} onClose={() => setMessage('')}>{message}</Alert>}
+        {error && <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError('')}>{error}</Alert>}
         <Paper>
           <TableContainer>
             <Table>
@@ -66,7 +86,23 @@ export default function AssignedTasks() {
                       <TableCell>{task.due_time || '-'}</TableCell>
                       <TableCell>{task.status}</TableCell>
                       <TableCell>
-                        <Button size="small" onClick={() => startTask(task.task_id)} variant="contained" sx={{ bgcolor: '#f97316' }}>Start</Button>
+                        <Button
+                          size="small"
+                          variant="contained"
+                          sx={{ bgcolor: '#f97316', mr: 1 }}
+                          disabled={task.status === 'In Progress' || task.status === 'Completed'}
+                          onClick={() => startTask(task.task_id)}
+                        >
+                          Start
+                        </Button>
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          disabled={task.status === 'Completed'}
+                          onClick={() => completeTask(task.task_id)}
+                        >
+                          Complete
+                        </Button>
                       </TableCell>
                     </TableRow>
                   ))
@@ -81,3 +117,4 @@ export default function AssignedTasks() {
     </Box>
   );
 }
+

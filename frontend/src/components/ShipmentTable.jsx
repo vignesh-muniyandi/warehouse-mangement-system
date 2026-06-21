@@ -3,7 +3,7 @@ import { DataGrid } from '@mui/x-data-grid';
 
 export default function ShipmentTable({ rows }) {
   const columns = [
-    { field: 'shipment_id', headerName: 'Shipment ID', width: 120 },
+    { field: 'shipment_id', headerName: 'Order ID', width: 120 },
     { field: 'order_id', headerName: 'Order ID', width: 120 },
     { field: 'customer_name', headerName: 'Customer', width: 200 },
     { field: 'address', headerName: 'Address', width: 300 },
@@ -14,7 +14,7 @@ export default function ShipmentTable({ rows }) {
   ];
   return (
     <div style={{ height: 600, width: '100%' }}>
-      <DataGrid rows={rows.map((r) => ({ id: r.shipment_id, ...r }))} columns={columns} pageSize={10} rowsPerPageOptions={[10, 25]} />
+      <DataGrid rows={rows.map((r) => ({ id: r.order_id || r.shipment_id, ...r }))} columns={columns} pageSize={10} rowsPerPageOptions={[10, 25]} />
     </div>
   );
 }

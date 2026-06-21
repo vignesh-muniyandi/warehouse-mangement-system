@@ -42,6 +42,10 @@ export default function useDeliverySocket(token) {
       setEvents((current) => ({ ...current, status: payload }));
     });
 
+    socket.on('notification', (payload) => {
+      setEvents((current) => ({ ...current, notification: payload }));
+    });
+
     socket.on('delivery:connected', (payload) => {
       setEvents((current) => ({ ...current, connectedMessage: payload.message }));
     });

@@ -102,7 +102,7 @@ All demo accounts use password: **`Demo@123`**
 ├── backend/
 │   ├── src/
 │   │   ├── index.js           (Express server + middleware)
-│   │   ├── routes/auth.js     (Auth endpoints)
+│   │   ├── routes/authRoutes.js     (Auth endpoints)
 │   │   ├── middleware/        (verifyToken, requireRole)
 │   │   ├── services/          (Redis, Email, Audit)
 │   │   └── db/                (PostgreSQL with fallback)

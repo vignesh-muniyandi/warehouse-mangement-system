@@ -35,7 +35,7 @@ export function AuthProvider({ children }) {
         try {
           const response = await api.get('/auth/me');
           if (response.data.success) {
-            const userValue = response.data.data?.user || null;
+            const userValue = response.data.user || response.data.data?.user || null;
             setUser(userValue);
             localStorage.setItem('user', JSON.stringify(userValue));
             setIsAuthenticated(true);
@@ -61,9 +61,10 @@ export function AuthProvider({ children }) {
     try {
       const response = await api.post('/auth/login', { email, password });
       if (response.data.success) {
-        const tokenValue = response.data.data?.token;
+        const tokenValue = response.data.token || response.data.data?.token;
         const tokenPayload = decodeJwtPayload(tokenValue) || {};
-        const userValue = { ...response.data.data?.user, permissions: tokenPayload.permissions || response.data.data?.user?.permissions || [] };
+        const userFromResp = response.data.user || response.data.data?.user || {};
+        const userValue = { ...userFromResp, permissions: tokenPayload.permissions || userFromResp.permissions || [] };
         setToken(tokenValue);
         setAuthToken(tokenValue);
         setUser(userValue);

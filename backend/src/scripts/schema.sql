@@ -267,7 +267,7 @@ CREATE TABLE IF NOT EXISTS shipment_items (
 
 CREATE TABLE IF NOT EXISTS delivery_tracking (
   tracking_id SERIAL PRIMARY KEY,
-  shipment_id INTEGER REFERENCES shipments(shipment_id) ON DELETE CASCADE,
+  order_id INTEGER REFERENCES orders(order_id) ON DELETE CASCADE,
   user_id INTEGER REFERENCES users(user_id) ON DELETE SET NULL,
   latitude NUMERIC(10,6),
   longitude NUMERIC(10,6),
@@ -276,7 +276,7 @@ CREATE TABLE IF NOT EXISTS delivery_tracking (
 
 CREATE TABLE IF NOT EXISTS delivery_proofs (
   proof_id SERIAL PRIMARY KEY,
-  shipment_id INTEGER REFERENCES shipments(shipment_id) ON DELETE CASCADE,
+  order_id INTEGER REFERENCES orders(order_id) ON DELETE CASCADE,
   signature_image TEXT,
   delivery_photo TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -284,7 +284,7 @@ CREATE TABLE IF NOT EXISTS delivery_proofs (
 
 CREATE TABLE IF NOT EXISTS failed_deliveries (
   failed_id SERIAL PRIMARY KEY,
-  shipment_id INTEGER REFERENCES shipments(shipment_id) ON DELETE CASCADE,
+  order_id INTEGER REFERENCES orders(order_id) ON DELETE CASCADE,
   reason VARCHAR(255),
   notes TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()

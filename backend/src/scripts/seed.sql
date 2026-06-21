@@ -55,14 +55,14 @@ ON CONFLICT (role_id, permission_id) DO NOTHING;
 
 INSERT INTO users (role_id, first_name, last_name, email, password_hash, phone, status)
 VALUES
-  (1, 'Admin', 'User', 'admin@wms.example.com', '$2b$12$mFiSSsZdPL0tEBcOHjPkMeekgq2h19t28I.z.RQlAR/mDAnnEGrgq', '555-0100', 'Active')
+  (1, 'Admin', 'User', 'admin@wms.example.com', '$2b$12$m7ap4.UFpslTHIbqV4oBDuHsNFRj7Vt1fdVEKF8IxEKnFenCVxdNa', '555-0100', 'Active')
 ON CONFLICT (email) DO NOTHING;
 
 INSERT INTO users (role_id, first_name, last_name, email, password_hash, phone, status)
 VALUES
-  (2, 'Manager', 'User', 'manager@wms.example.com', '$2b$12$/HTRAVF1LO.GXrnXmazWP.nSVkYuRt5LJnIxhB8vQtbdKfroAu8Wu', '555-0101', 'Active'),
-  (3, 'Worker', 'User', 'worker@wms.example.com', '$2b$12$/HTRAVF1LO.GXrnXmazWP.nSVkYuRt5LJnIxhB8vQtbdKfroAu8Wu', '555-0102', 'Active'),
-  (4, 'Delivery', 'User', 'delivery@wms.example.com', '$2b$12$/HTRAVF1LO.GXrnXmazWP.nSVkYuRt5LJnIxhB8vQtbdKfroAu8Wu', '555-0103', 'Active')
+  (2, 'Manager', 'User', 'manager@wms.example.com', '$2b$12$m7ap4.UFpslTHIbqV4oBDuHsNFRj7Vt1fdVEKF8IxEKnFenCVxdNa', '555-0101', 'Active'),
+  (3, 'Worker', 'User', 'worker@wms.example.com', '$2b$12$m7ap4.UFpslTHIbqV4oBDuHsNFRj7Vt1fdVEKF8IxEKnFenCVxdNa', '555-0102', 'Active'),
+  (4, 'Delivery', 'User', 'delivery@wms.example.com', '$2b$12$m7ap4.UFpslTHIbqV4oBDuHsNFRj7Vt1fdVEKF8IxEKnFenCVxdNa', '555-0103', 'Active')
 ON CONFLICT (email) DO NOTHING;
 
 INSERT INTO warehouses (warehouse_code, name, location, capacity)

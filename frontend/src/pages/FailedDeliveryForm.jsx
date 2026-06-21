@@ -11,7 +11,7 @@ export default function FailedDeliveryForm() {
   const [notes, setNotes] = useState('');
 
   const submit = async () => {
-    await api.post('/delivery/failed', { shipment_id: Number(shipmentId), reason, notes });
+    await api.post('/delivery/failed', { order_id: Number(shipmentId), reason, notes });
     window.location.reload();
   };
 
@@ -20,7 +20,7 @@ export default function FailedDeliveryForm() {
       <Sidebar />
       <Box sx={{ flex: 1, p: 3 }}>
         <Typography variant="h5">Record Failed Delivery</Typography>
-        <TextField label="Shipment ID" value={shipmentId} onChange={(e) => setShipmentId(e.target.value)} sx={{ mt: 2 }} />
+        <TextField label="Order ID" value={shipmentId} onChange={(e) => setShipmentId(e.target.value)} sx={{ mt: 2 }} />
         <TextField select label="Reason" value={reason} onChange={(e) => setReason(e.target.value)} sx={{ mt: 2 }}>
           {reasons.map(r => <MenuItem key={r} value={r}>{r}</MenuItem>)}
         </TextField>

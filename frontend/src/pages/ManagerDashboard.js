@@ -29,6 +29,8 @@ import ModalDialog from '../components/common/ModalDialog';
 import { useAuth } from '../context/AuthContext';
 import usePermission from '../hooks/usePermission';
 import api from '../api/axios';
+import useDeliverySocket from '../hooks/useDeliverySocket';
+
 
 const green = '#15803d';
 
@@ -44,7 +46,7 @@ const MODULE_TITLES = {
 };
 
 export default function ManagerDashboard() {
-  const { user } = useAuth();
+  const { user, token } = useAuth();
   const { hasPermission } = usePermission();
   const [searchParams, setSearchParams] = useSearchParams();
   const activeModule = searchParams.get('module') || 'dashboard';
@@ -58,6 +60,8 @@ export default function ManagerDashboard() {
   const [purchaseOrders, setPurchaseOrders] = useState([]);
   const [staff, setStaff] = useState([]);
   const [settings, setSettings] = useState([]);
+  const [notifications, setNotifications] = useState([]);
+  const { connected, events } = useDeliverySocket(token);
 
   const [inventorySearch, setInventorySearch] = useState('');
   const [orderSearch, setOrderSearch] = useState('');
@@ -100,32 +104,93 @@ export default function ManagerDashboard() {
     );
   }, [orders, orderSearch]);
 
+  const canReadInventory = hasPermission('inventory:read');
+  const canReadOrders = hasPermission('orders:read');
+  const canReadTasks = hasPermission('tasks:read');
+  const canReadPurchaseOrders = hasPermission('purchase_orders:read');
+  const canReadStaff = hasPermission('tasks:create') || hasPermission('orders:assign');
+  const canReadSettings = hasPermission('settings:read');
+
+  const [showSettingsWarning, setShowSettingsWarning] = useState(false);
+
   const loadData = useCallback(async () => {
+    console.group('[ManagerDashboard] loadData start');
+    console.log({ canReadInventory, canReadOrders, canReadTasks, canReadPurchaseOrders, canReadStaff, canReadSettings, tokenPresent: Boolean(token) });
     setLoading(true);
     setError('');
     const calls = [
-      api.get('/dashboard/manager/summary').then((res) => setSummary(res.data.data || {})),
-      api.get('/dashboard/manager/kpis').then((res) => setKpis(res.data.data || {})),
+      api.get('/dashboard/manager/summary').then((res) => {
+        console.log('[ManagerDashboard] summary response', res.data);
+        setSummary(res.data.data || {});
+      }),
+      api.get('/dashboard/manager/kpis').then((res) => {
+        console.log('[ManagerDashboard] kpis response', res.data);
+        setKpis(res.data.data || {});
+      }),
     ];
-    if (hasPermission('inventory:read')) calls.push(api.get('/inventory').then((res) => setInventory(res.data.data || [])));
-    if (hasPermission('orders:read')) calls.push(api.get('/orders').then((res) => setOrders(res.data.data || [])));
-    if (hasPermission('tasks:read')) calls.push(api.get('/tasks').then((res) => setTasks(res.data.data || [])));
-    if (hasPermission('purchase_orders:read')) calls.push(api.get('/purchase-orders').then((res) => setPurchaseOrders(res.data.data || [])));
-    if (hasPermission('tasks:create') || hasPermission('orders:assign')) calls.push(api.get('/staff').then((res) => setStaff(res.data.data || [])));
-    if (hasPermission('settings:read')) calls.push(api.get('/settings').then((res) => setSettings(res.data.data || [])));
+    if (canReadInventory) calls.push(api.get('/inventory').then((res) => {
+      console.log('[ManagerDashboard] inventory response', res.data);
+      setInventory(res.data.data || []);
+    }));
+    if (canReadOrders) calls.push(api.get('/orders').then((res) => {
+      console.log('[ManagerDashboard] orders response', res.data);
+      setOrders(res.data.data || []);
+    }));
+    if (canReadTasks) calls.push(api.get('/tasks').then((res) => {
+      console.log('[ManagerDashboard] tasks response', res.data);
+      setTasks(res.data.data || []);
+    }));
+    if (canReadPurchaseOrders) calls.push(api.get('/purchase-orders').then((res) => {
+      console.log('[ManagerDashboard] purchase-orders response', res.data);
+      setPurchaseOrders(res.data.data || []);
+    }));
+    if (!canReadPurchaseOrders) setShowSettingsWarning(true);
+    if (canReadStaff) calls.push(api.get('/staff').then((res) => {
+      console.log('[ManagerDashboard] staff response', res.data);
+      setStaff(res.data.data || []);
+    }));
+    if (canReadSettings) calls.push(api.get('/settings').then((res) => {
+      console.log('[ManagerDashboard] settings response', res.data);
+      setSettings(res.data.data || []);
+    }));
 
     const results = await Promise.allSettled(calls);
-    if (results.some((result) => result.status === 'rejected')) {
+    const rejected = results.filter((result) => result.status === 'rejected');
+    if (rejected.length) {
+      console.error('[ManagerDashboard] loadData failures', rejected.map((result) => result.status === 'rejected' ? result.reason : null));
       setError('Some live data could not be loaded. Check permissions or API health.');
     }
     setLoading(false);
-  }, [hasPermission]);
+    console.log('[ManagerDashboard] loadData finished', { loading: false });
+    console.groupEnd();
+  }, [canReadInventory, canReadOrders, canReadTasks, canReadPurchaseOrders, canReadStaff, canReadSettings, token]);
 
   useEffect(() => {
     loadData();
   }, [loadData]);
 
+  useEffect(() => {
+    const loadNotifications = async () => {
+      try {
+        const response = await api.get('/manager/notifications');
+        console.log('[ManagerDashboard] notifications response', response.data);
+        setNotifications(response.data.data || []);
+      } catch (err) {
+        console.error('[ManagerDashboard] notifications error', err.response?.data || err.message);
+      }
+    };
+    loadNotifications();
+  }, []);
+
+  useEffect(() => {
+    if (events.notification) {
+      setNotifications((current) => [events.notification, ...current].slice(0, 20));
+      setMessage(`New notification: ${events.notification.title}`);
+    }
+  }, [events.notification]);
+
   const handleModuleChange = (module) => setSearchParams({ module });
+
 
   const submitAdjustmentRequest = async (event) => {
     event.preventDefault();
@@ -168,6 +233,31 @@ export default function ManagerDashboard() {
     loadData();
   };
 
+  const markNotificationRead = async (notificationId) => {
+    try {
+      await api.patch(`/notifications/${notificationId}/read`);
+      setNotifications((current) => current.map((notification) => (
+        notification.notification_id === notificationId
+          ? { ...notification, read_status: true }
+          : notification
+      )));
+    } catch (err) {
+      console.error(err);
+      setError(err.response?.data?.message || 'Unable to mark notification as read.');
+    }
+  };
+
+  const markAllNotificationsRead = async () => {
+    try {
+      const unreadIds = notifications.filter((notification) => !notification.read_status).map((notification) => notification.notification_id);
+      await Promise.all(unreadIds.map((id) => api.patch(`/notifications/${id}/read`)));
+      setNotifications((current) => current.map((notification) => ({ ...notification, read_status: true })));
+    } catch (err) {
+      console.error(err);
+      setError(err.response?.data?.message || 'Unable to mark all notifications as read.');
+    }
+  };
+
   const exportReport = async (type, format) => {
     const response = await api.get(`/reports/${type}/export?format=${format}`, { responseType: 'blob' });
     const url = window.URL.createObjectURL(new Blob([response.data]));
@@ -187,6 +277,7 @@ export default function ManagerDashboard() {
     { label: 'Low Stock Alerts', value: summary.lowStockAlerts || 0, icon: <WarningAmberIcon />, tone: '#b45309' },
     { label: 'Overdue Tasks', value: summary.overdueTasks || 0, icon: <WarningAmberIcon />, tone: '#b91c1c' },
     { label: "Today's Activities", value: summary.todaysActivities || 0, icon: <AssessmentIcon />, tone: green },
+    { label: 'Notifications', value: notifications.filter((n) => !n.read_status).length, icon: <WarningAmberIcon />, tone: '#2563eb' },
   ];
 
   const kpiChartData = [
@@ -218,6 +309,43 @@ export default function ManagerDashboard() {
               ))}
               {!pendingTasks.length && <Typography color="text.secondary">No pending tasks.</Typography>}
             </Stack>
+          </Paper>
+          <Paper sx={{ p: 2.5, mt: 3, borderRadius: 2 }}>
+            <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 2 }}>
+              <Typography variant="h6" sx={{ fontWeight: 800 }}>Latest Notifications</Typography>
+              {notifications.some((notification) => !notification.read_status) && (
+                <Button size="small" onClick={markAllNotificationsRead}>Mark all read</Button>
+              )}
+            </Stack>
+            {notifications.length ? (
+              notifications.slice(0, 5).map((notification) => (
+                <Box
+                  key={notification.notification_id}
+                  sx={{
+                    mb: 1,
+                    p: 1.5,
+                    borderRadius: 1,
+                    bgcolor: notification.read_status ? '#f8fafc' : '#f0f9ff',
+                    border: notification.read_status ? '1px solid #e2e8f0' : '1px solid #60a5fa',
+                  }}
+                >
+                  <Stack direction="row" justifyContent="space-between" alignItems="flex-start" spacing={1}>
+                    <Box>
+                      <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>{notification.title}</Typography>
+                      <Typography variant="body2" color="text.secondary">{notification.message}</Typography>
+                      <Typography variant="caption" color="text.secondary">{new Date(notification.created_at).toLocaleString()}</Typography>
+                    </Box>
+                    {!notification.read_status && (
+                      <Button size="small" onClick={() => markNotificationRead(notification.notification_id)}>
+                        Mark read
+                      </Button>
+                    )}
+                  </Stack>
+                </Box>
+              ))
+            ) : (
+              <Typography color="text.secondary">No notifications yet.</Typography>
+            )}
           </Paper>
         </Grid>
       </Grid>
@@ -509,6 +637,11 @@ export default function ManagerDashboard() {
 
           {message && <Alert severity="success" onClose={() => setMessage('')} sx={{ mb: 2 }}>{message}</Alert>}
           {error && <Alert severity="warning" onClose={() => setError('')} sx={{ mb: 2 }}>{error}</Alert>}
+          {showSettingsWarning && (
+            <Alert severity="info" sx={{ mb: 2 }}>
+              Some manager modules are hidden because your role does not have permission to read purchase orders or settings.
+            </Alert>
+          )}
 
           {moduleContent[activeModule]?.()}
         </Box>

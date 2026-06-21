@@ -9,7 +9,7 @@ export default function CollectShipment() {
 
   const handleCollect = async () => {
     try {
-      await api.post('/delivery/collect', { shipment_id: Number(shipmentId) });
+      await api.post('/delivery/collect', { order_id: Number(shipmentId) });
       setMessage('Collected');
     } catch (err) {
       setMessage(err.response?.data?.message || 'Failed to collect');
@@ -22,7 +22,7 @@ export default function CollectShipment() {
       <Box sx={{ flex: 1, p: 3 }}>
         <Typography variant="h5">Collect Shipment</Typography>
         {message && <Alert sx={{ mt: 2 }}>{message}</Alert>}
-        <TextField label="Shipment ID" value={shipmentId} onChange={(e) => setShipmentId(e.target.value)} sx={{ mt: 2 }} />
+        <TextField label="Order ID" value={shipmentId} onChange={(e) => setShipmentId(e.target.value)} sx={{ mt: 2 }} />
         <Button variant="contained" sx={{ mt: 2 }} onClick={handleCollect}>Collect</Button>
       </Box>
     </Box>

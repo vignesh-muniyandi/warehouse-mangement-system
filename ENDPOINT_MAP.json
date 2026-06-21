@@ -1,0 +1,55 @@
+{
+  "baseUrl": "/api",
+  "generatedFrom": "ENDPOINT_MAP.md",
+  "auth": [
+    { "method": "POST", "path": "/auth/login", "auth": "public" },
+    { "method": "POST", "path": "/auth/logout", "auth": "verifyToken" },
+    { "method": "POST", "path": "/auth/refresh", "auth": "cookie" },
+    { "method": "GET", "path": "/auth/me", "auth": "verifyToken" },
+    { "method": "POST", "path": "/auth/forgot-password", "auth": "public" },
+    { "method": "POST", "path": "/auth/reset-password", "auth": "public" },
+    { "method": "POST", "path": "/auth/register", "auth": "public" }
+  ],
+  "admin": [
+    { "method": "GET", "path": "/admin/users", "auth": "authorize(1)" },
+    { "method": "GET", "path": "/admin/users/search", "auth": "authorize(1)" },
+    { "method": "POST", "path": "/admin/users", "auth": "authorize(1)" },
+    { "method": "PUT", "path": "/admin/users/:id", "auth": "authorize(1)" },
+    { "method": "GET", "path": "/admin/roles", "auth": "authorize(1)" },
+    { "method": "GET", "path": "/admin/warehouses", "auth": "authorize(1)" }
+  ],
+  "core": {
+    "dashboards": [
+      { "method": "GET", "path": "/dashboard/stats", "auth": "reports:read|reports:read_limited" },
+      { "method": "GET", "path": "/dashboard/admin/summary", "auth": "reports:read" },
+      { "method": "GET", "path": "/dashboard/manager/summary", "auth": "inventory:read|orders:read|tasks:read" }
+    ],
+    "users": [
+      { "method": "GET", "path": "/users", "auth": "users:read" },
+      { "method": "GET", "path": "/users/:id", "auth": "users:read" },
+      { "method": "POST", "path": "/users", "auth": "users:create" },
+      { "method": "PUT", "path": "/users/:id", "auth": "users:update" },
+      { "method": "DELETE", "path": "/users/:id", "auth": "users:delete" }
+    ],
+    "orders": [
+      { "method": "GET", "path": "/orders", "auth": "orders:read" },
+      { "method": "GET", "path": "/orders/:id", "auth": "orders:read" },
+      { "method": "PUT", "path": "/orders/:id/assign", "auth": "orders:assign" },
+      { "method": "PUT", "path": "/orders/:id/status", "auth": "orders:update" }
+    ]
+  },
+  "delivery": [
+    { "method": "GET", "path": "/delivery/dashboard", "auth": "authorize(4)" },
+    { "method": "GET", "path": "/delivery/shipments", "auth": "authorize(4)" },
+    { "method": "GET", "path": "/delivery/shipment/:id", "auth": "authorize(4)" },
+    { "method": "POST", "path": "/delivery/start-route", "auth": "authorize(4)" },
+    { "method": "POST", "path": "/delivery/collect", "auth": "authorize(4)" },
+    { "method": "POST", "path": "/delivery/dispatch", "auth": "authorize(4)" },
+    { "method": "POST", "path": "/delivery/location", "auth": "authorize(4)" },
+    { "method": "POST", "path": "/delivery/proof", "auth": "authorize(4)" },
+    { "method": "POST", "path": "/delivery/delivered", "auth": "authorize(4)" },
+    { "method": "POST", "path": "/delivery/failed", "auth": "authorize(4)" },
+    { "method": "GET", "path": "/delivery/tracking/:shipment_id", "auth": "authorize(4)" },
+    { "method": "GET", "path": "/delivery/day-summary", "auth": "authorize(4)" }
+  ]
+}

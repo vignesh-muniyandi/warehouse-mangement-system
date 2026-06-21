@@ -1,3 +1,4 @@
+import React, { useMemo } from 'react';
 import { useAuth } from '../context/AuthContext';
 
 export const ROLES = {
@@ -45,5 +46,13 @@ export default function usePermission() {
     return permissions.some((permission) => hasPermission(permission));
   };
 
-  return { hasAnyPermission, hasPermission, roleRouteMap, roleIdRouteMap, roleIdNameMap, ROLES, user };
+  return useMemo(() => ({
+    hasAnyPermission,
+    hasPermission,
+    roleRouteMap,
+    roleIdRouteMap,
+    roleIdNameMap,
+    ROLES,
+    user,
+  }), [user]);
 }

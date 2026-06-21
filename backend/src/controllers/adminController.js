@@ -1,4 +1,6 @@
 const adminService = require('../services/adminService');
+const emailService = require('../services/emailService');
+const db = require('../db');
 const AppError = require('../utils/AppError');
 
 exports.getUsers = async (req, res) => {
@@ -45,6 +47,24 @@ exports.createUser = async (req, res) => {
       warehouse_id: Number(req.body.warehouse_id),
     };
     const createdUser = await adminService.createUser(payload, req.user.user_id);
+
+    // fetch role name for email
+    try {
+      const roleRes = await db.query('SELECT role_name FROM roles WHERE role_id = $1', [createdUser.role_id]);
+      const roleName = roleRes.rows[0]?.role_name || '';
+      // send welcome email asynchronously (do not block response)
+      emailService.sendWelcomeEmail({
+        first_name: createdUser.first_name,
+        last_name: createdUser.last_name,
+        email: createdUser.email,
+        role_name: roleName,
+      }).then(() => {
+        // no-op
+      }).catch((e) => console.error('[ADMIN CONTROLLER] email send failed', e));
+    } catch (e) {
+      console.error('[ADMIN CONTROLLER] failed to fetch role or send email', e);
+    }
+
     return res.status(201).json({ success: true, message: 'User created successfully', data: createdUser });
   } catch (error) {
     console.error('[ADMIN CONTROLLER] createUser error:', error);

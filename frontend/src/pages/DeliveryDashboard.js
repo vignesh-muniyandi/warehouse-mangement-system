@@ -62,7 +62,7 @@ export default function DeliveryDashboard() {
   const [error, setError] = useState('');
 
   const selectedShipment = useMemo(
-    () => shipments.find((shipment) => String(shipment.shipment_id) === String(selectedShipmentId)) || shipments[0],
+    () => shipments.find((shipment) => String(shipment.order_id || shipment.shipment_id) === String(selectedShipmentId)) || shipments[0],
     [shipments, selectedShipmentId]
   );
 
@@ -91,7 +91,7 @@ export default function DeliveryDashboard() {
   }, []);
 
   useEffect(() => {
-    if (selectedShipment && !selectedShipmentId) setSelectedShipmentId(selectedShipment.shipment_id);
+    if (selectedShipment && !selectedShipmentId) setSelectedShipmentId(selectedShipment.order_id || selectedShipment.shipment_id);
   }, [selectedShipment, selectedShipmentId]);
 
   const resetForm = () => setForm({
@@ -121,7 +121,7 @@ export default function DeliveryDashboard() {
   };
 
   const completeDelivery = () => {
-    updateStatus(selectedShipment?.shipment_id, 'Delivered', {
+    updateStatus(selectedShipment?.order_id || selectedShipment?.shipment_id, 'Delivered', {
       customer_verified: form.customer_verified,
       cod_collected: selectedShipment?.cod_amount > 0 ? form.cod_collected : true,
       proof_of_delivery: form.proof_of_delivery,
@@ -129,7 +129,7 @@ export default function DeliveryDashboard() {
   };
 
   const failDelivery = () => {
-    updateStatus(selectedShipment?.shipment_id, 'Delivery Failed', {
+    updateStatus(selectedShipment?.order_id || selectedShipment?.shipment_id, 'Delivery Failed', {
       delivery_failure_reason: form.delivery_failure_reason,
       rescheduled_date: form.rescheduled_date || null,
     });
@@ -189,17 +189,17 @@ export default function DeliveryDashboard() {
                 <Stack spacing={1.5} sx={{ mt: 2 }}>
                   {shipments.map((shipment) => (
                     <Paper
-                      key={shipment.shipment_id}
-                      onClick={() => setSelectedShipmentId(shipment.shipment_id)}
+                      key={shipment.order_id || shipment.shipment_id}
+                      onClick={() => setSelectedShipmentId(shipment.order_id || shipment.shipment_id)}
                       sx={{
                         p: 1.5,
                         cursor: 'pointer',
-                        border: String(selectedShipment?.shipment_id) === String(shipment.shipment_id) ? `2px solid ${purple}` : '1px solid #e9d5ff',
+                        border: String(selectedShipment?.order_id || selectedShipment?.shipment_id) === String(shipment.order_id || shipment.shipment_id) ? `2px solid ${purple}` : '1px solid #e9d5ff',
                       }}
                     >
                       <Stack direction="row" justifyContent="space-between" spacing={1}>
                         <Box>
-                          <Typography variant="body2" sx={{ fontWeight: 900 }}>#{shipment.shipment_id} {shipment.customer_name}</Typography>
+                          <Typography variant="body2" sx={{ fontWeight: 900 }}>#{shipment.order_id || shipment.shipment_id} {shipment.customer_name}</Typography>
                           <Typography variant="caption" color="text.secondary">{shipment.delivery_address}</Typography>
                         </Box>
                         <Chip size="small" label={shipment.status} color={shipment.status === 'Delivered' ? 'success' : 'secondary'} />
@@ -242,15 +242,15 @@ export default function DeliveryDashboard() {
               <Paper sx={{ p: 2, borderRadius: 2 }}>
                 <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" spacing={2}>
                   <Box>
-                    <Typography variant="h6" sx={{ fontWeight: 900 }}>Selected Shipment #{selectedShipment?.shipment_id || '-'}</Typography>
+                    <Typography variant="h6" sx={{ fontWeight: 900 }}>Selected Order #{selectedShipment?.order_id || selectedShipment?.shipment_id || '-'}</Typography>
                     <Typography color="text.secondary">{selectedShipment?.customer_name}</Typography>
                     <Typography variant="body2">{selectedShipment?.delivery_address}</Typography>
                     {selectedShipment?.cod_amount > 0 && <Chip sx={{ mt: 1 }} color="secondary" label={`COD $${Number(selectedShipment.cod_amount).toLocaleString()}`} />}
                   </Box>
-                  <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                    <Button variant="outlined" onClick={() => updateStatus(selectedShipment?.shipment_id, 'Collected')}>Update Status: Collected</Button>
-                    <Button variant="outlined" onClick={() => updateStatus(selectedShipment?.shipment_id, 'Dispatched')}>Update Status: Dispatched</Button>
-                    <Button variant="contained" sx={{ bgcolor: purple }} onClick={() => updateStatus(selectedShipment?.shipment_id, 'En Route')}>Update Status: En Route</Button>
+                    <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                    <Button variant="outlined" onClick={() => updateStatus(selectedShipment?.order_id || selectedShipment?.shipment_id, 'Collected')}>Update Status: Collected</Button>
+                    <Button variant="outlined" onClick={() => updateStatus(selectedShipment?.order_id || selectedShipment?.shipment_id, 'Dispatched')}>Update Status: Dispatched</Button>
+                    <Button variant="contained" sx={{ bgcolor: purple }} onClick={() => updateStatus(selectedShipment?.order_id || selectedShipment?.shipment_id, 'En Route')}>Update Status: En Route</Button>
                   </Stack>
                 </Stack>
               </Paper>

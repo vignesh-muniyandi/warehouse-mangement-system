@@ -166,7 +166,6 @@ wms/
 │   │   ├── routes/
 │   │   │   ├── authRoutes.js        ← Auth endpoints
 │   │   │   ├── api.js               ← All other endpoints (RBAC protected)
-│   │   │   └── auth.js              ← Token generation helpers
 │   │   ├── controllers/
 │   │   │   └── authController.js    ← Login, logout, password reset logic
 │   │   ├── middleware/

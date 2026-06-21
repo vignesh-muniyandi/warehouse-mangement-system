@@ -8,7 +8,7 @@ export default function PODUploader({ onSubmit }) {
 
   const submit = () => {
     const fd = new FormData();
-    fd.append('shipment_id', shipmentId);
+    fd.append('order_id', shipmentId);
     if (signature) fd.append('signature', signature);
     if (photo) fd.append('photo', photo);
     onSubmit(fd);
@@ -16,7 +16,7 @@ export default function PODUploader({ onSubmit }) {
 
   return (
     <Box>
-      <TextField label="Shipment ID" value={shipmentId} onChange={(e) => setShipmentId(e.target.value)} />
+      <TextField label="Order ID" value={shipmentId} onChange={(e) => setShipmentId(e.target.value)} />
       <Stack direction="row" spacing={1} sx={{ mt: 2 }}>
         <Button variant="outlined" component="label">Upload Signature<input type="file" hidden onChange={(e) => setSignature(e.target.files[0])} /></Button>
         <Button variant="outlined" component="label">Upload Photo<input type="file" hidden onChange={(e) => setPhoto(e.target.files[0])} /></Button>

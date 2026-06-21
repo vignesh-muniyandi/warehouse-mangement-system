@@ -20,6 +20,7 @@ export default function RouteTracking() {
 
   useEffect(() => {
     if (!selectedShipment) return;
+    // selectedShipment may be order_id or shipment_id
     api.get(`/delivery/tracking/${selectedShipment}`)
       .then((r) => setTrackingHistory(r.data.data || []))
       .catch(() => setTrackingHistory([]));
@@ -28,12 +29,12 @@ export default function RouteTracking() {
   const startTracking = () => {
     if (!selectedShipment || !navigator.geolocation) return;
     setTrackingStatus('tracking');
-    watchIdRef.current = navigator.geolocation.watchPosition(
+        watchIdRef.current = navigator.geolocation.watchPosition(
       (pos) => {
         const lat = pos.coords.latitude;
         const lng = pos.coords.longitude;
         setPosition({ lat, lng });
-        api.post('/delivery/location', { shipment_id: selectedShipment, latitude: lat, longitude: lng }).catch(() => {});
+            api.post('/delivery/location', { order_id: selectedShipment, latitude: lat, longitude: lng }).catch(() => {});
       },
       (err) => {
         console.error(err);
@@ -59,21 +60,21 @@ export default function RouteTracking() {
         <Paper sx={{ p: 3 }}>
           <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems="center" sx={{ mb: 2 }}>
             <FormControl sx={{ minWidth: 240 }}>
-              <InputLabel id="shipment-select-label">Shipment</InputLabel>
-              <Select
-                labelId="shipment-select-label"
-                value={selectedShipment}
-                label="Shipment"
-                onChange={(event) => setSelectedShipment(event.target.value)}
-              >
-                <MenuItem value="">Select a shipment</MenuItem>
-                {shipments.map((shipment) => (
-                  <MenuItem key={shipment.shipment_id} value={shipment.shipment_id}>
-                    {`#${shipment.shipment_id} — ${shipment.customer_name}`}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
+                  <InputLabel id="shipment-select-label">Order</InputLabel>
+                  <Select
+                    labelId="shipment-select-label"
+                    value={selectedShipment}
+                    label="Order"
+                    onChange={(event) => setSelectedShipment(event.target.value)}
+                  >
+                    <MenuItem value="">Select an order</MenuItem>
+                    {shipments.map((shipment) => (
+                      <MenuItem key={shipment.order_id || shipment.shipment_id} value={shipment.order_id || shipment.shipment_id}>
+                        {`#${shipment.order_id || shipment.shipment_id} — ${shipment.customer_name}`}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
             <Button variant="contained" onClick={startTracking} disabled={!selectedShipment || trackingStatus === 'tracking'}>
               Start Tracking
             </Button>
@@ -83,8 +84,8 @@ export default function RouteTracking() {
           </Stack>
           <RouteMap position={position} trackingPoints={trackingHistory} />
           <Typography variant="body2" sx={{ mt: 2, color: 'text.secondary' }}>
-            {trackingStatus === 'tracking' ? 'Tracking in progress...' : trackingStatus === 'stopped' ? 'Tracking stopped.' : 'Choose a shipment and start tracking to stream location updates.'}
-          </Typography>
+              {trackingStatus === 'tracking' ? 'Tracking in progress...' : trackingStatus === 'stopped' ? 'Tracking stopped.' : 'Choose an order and start tracking to stream location updates.'}
+            </Typography>
         </Paper>
       </Box>
     </Box>

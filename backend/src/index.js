@@ -60,6 +60,7 @@ io.use((socket, next) => {
 io.on('connection', (socket) => {
   const userId = socket.user?.user_id;
   if (userId) {
+    socket.join(`user:${userId}`);
     socket.join(`delivery:${userId}`);
     socket.emit('delivery:connected', { message: 'Delivery real-time channel connected' });
   }
@@ -96,15 +97,17 @@ app.options('*', cors({ origin: allowedOrigins, credentials: true }));
 const path = require('path');
 const fs = require('fs');
 
+app.get('/health', (req, res) => res.json({ success: true, uptime: process.uptime() }));
+
 // Serve frontend build if present and provide SPA fallback so direct
 // navigation to client-side routes (e.g. /dashboard/manager/kpis) works.
 const frontendBuildPath = path.join(__dirname, '..', '..', 'frontend', 'build');
 if (fs.existsSync(frontendBuildPath)) {
   app.use(express.static(frontendBuildPath));
 
-  // Serve index.html for routes that are not API/auth so the SPA can handle routing
+  // Serve index.html for routes that are not API/auth/health so the SPA can handle routing
   app.get('*', (req, res, next) => {
-    if (req.path.startsWith('/api') || req.path.startsWith('/auth')) return next();
+    if (req.path.startsWith('/api') || req.path.startsWith('/auth') || req.path === '/health') return next();
     return res.sendFile(path.join(frontendBuildPath, 'index.html'));
   });
 }
@@ -113,8 +116,6 @@ if (fs.existsSync(frontendBuildPath)) {
 app.use('/api/debug', debugRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api', apiRoutes);
-
-app.get('/health', (req, res) => res.json({ success: true, uptime: process.uptime() }));
 
 app.use((err, req, res, next) => {
   console.error('[SERVER] Unhandled error:', err);
